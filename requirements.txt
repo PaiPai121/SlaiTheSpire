@@ -1,0 +1,24 @@
+# gymnasium==0.29.1
+# numpy
+# stable-baselines3
+# shimmy
+# tensorboard
+# sb3-contrib
+
+# 指明去 PyTorch 官方仓库找 CUDA 版本的包
+--extra-index-url https://download.pytorch.org/whl/cu121
+
+# 核心深度学习框架 (你的 GPU 版本)
+torch==2.5.1+cu121
+torchvision==0.20.1+cu121
+torchaudio==2.5.1+cu121
+
+# 强化学习相关库
+gymnasium==0.29.1
+stable-baselines3
+sb3-contrib
+shimmy
+tensorboard
+
+# 基础数学库
+numpy
