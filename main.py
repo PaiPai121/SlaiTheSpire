@@ -113,8 +113,9 @@ def main():
         model.save(latest_model_path)
     
     except Exception as e:
-        # 记录其他报错
-        with open(os.path.join(current_dir, "crash_log.txt"), "a") as f:
+        print(f"\n检测到程序错误: {e}")
+        # [修改] 加上 encoding='utf-8' 防止写日志时二次崩溃
+        with open(os.path.join(current_dir, "crash_log.txt"), "a", encoding='utf-8') as f:
             f.write(f"Crash Error: {str(e)}\n")
             
     finally:
