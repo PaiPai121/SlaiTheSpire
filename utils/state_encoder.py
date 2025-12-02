@@ -1,6 +1,6 @@
 import numpy as np
 import zlib
-
+from spire_env.definitions import ObservationConfig
 # --- 特征维度计算 v3.0 ---
 # 1. 玩家: 9个 (基础+状态)
 # 2. 手牌: 10张 * 5特征 = 50个
@@ -10,7 +10,7 @@ import zlib
 # 这里为了简单，我们先只加怪物ID和遗物ID
 # 总计: 9 + 50 + 25 + 10 = 94
 # 为了以后扩展方便，直接开到 120 吧，多余的填 0 没影响
-OBSERVATION_SIZE = 128
+OBSERVATION_SIZE = ObservationConfig.SIZE
 
 def get_power_amount(powers, power_id):
     if not powers: return 0
