@@ -7,12 +7,11 @@ from spire_env.definitions import ObservationConfig
 # 3. 怪物: 5只 * 5特征 (原4个 + 1个HashID) = 25个
 # 4. [新增] 遗物: 最多看前 10 个遗物 * 1个HashID = 10个
 # 5. [新增] 抽牌堆/弃牌堆统计: 20个 (预留一些统计信息)
-# 这里为了简单，我们先只加怪物ID和遗物ID
-# 总计: 9 + 50 + 25 + 10 = 94
-# 为了以后扩展方便，直接开到 120 吧，多余的填 0 没影响
+
 OBSERVATION_SIZE = ObservationConfig.SIZE
 
 def get_power_amount(powers, power_id):
+    if not isinstance(powers, list): return 0 # 安全检查
     if not powers: return 0
     for p in powers:
         if p['id'] == power_id: return p['amount']
@@ -33,7 +32,9 @@ def encode_state(state):
     game_state = state['game_state']
     combat_state = game_state.get('combat_state', {})
     player = combat_state.get('player', {})
-    
+    # [核心修复] 获取可用指令，用于修正屏幕类型
+    cmds = state.get('available_commands', [])
+
     # --- 1. 玩家信息 (0-8) ---
     obs[0] = player.get('current_hp', 0)
     obs[1] = player.get('max_hp', 80)
@@ -54,19 +55,16 @@ def encode_state(state):
         base_idx = 9 + (i * 6) # 步长变成 6
         if i < len(hand):
             card = hand[i]
-            obs[base_idx] = card.get('cost', 0)
-            
-            card_type = card.get('type', 'UNKNOWN')
-            obs[base_idx + 1] = 1.0 if card_type == 'ATTACK' else 0.0
-            obs[base_idx + 2] = 1.0 if card_type == 'SKILL' else 0.0
-            obs[base_idx + 3] = 1.0 if card_type == 'POWER' else 0.0
-            
-            # 哈希ID
-            obs[base_idx + 4] = hash_string(card.get('id', ''))
-            
-            # [新增] 是否升级 (Upgraded)
-            # 游戏里 upgrades > 0 代表是 +1 牌
-            obs[base_idx + 5] = 1.0 if card.get('upgrades', 0) > 0 else 0.0
+            if isinstance(card, dict):
+                obs[base_idx] = card.get('cost', 0)
+                card_type = card.get('type', 'UNKNOWN')
+                obs[base_idx + 1] = 1.0 if card_type == 'ATTACK' else 0.0
+                obs[base_idx + 2] = 1.0 if card_type == 'SKILL' else 0.0
+                obs[base_idx + 3] = 1.0 if card_type == 'POWER' else 0.0
+                obs[base_idx + 4] = hash_string(card.get('id', ''))
+                obs[base_idx + 5] = 1.0 if card.get('upgrades', 0) > 0 else 0.0
+            else:
+                obs[base_idx:base_idx+6] = 0
         else:
             obs[base_idx:base_idx+6] = 0
             
@@ -76,7 +74,7 @@ def encode_state(state):
         base_idx = 69 + (i * 5)
         if i < len(monsters):
             m = monsters[i]
-            if not m.get('is_gone') and not m.get('half_dead'):
+            if isinstance(m, dict) and not m.get('is_gone') and not m.get('half_dead'):
                 obs[base_idx] = m.get('current_hp', 0)
                 obs[base_idx + 1] = m.get('block', 0)
                 intent = m.get('intent', 'NONE')
@@ -134,6 +132,21 @@ def encode_state(state):
             obs[118 + i] = has_potion
         else:
             obs[118 + i] = 0.0
-
+    # --- 8. [核心修复] 界面类型修正 (121-128) ---
+    raw_screen_type = game_state.get('screen_type', 'NONE')
+    
+    # 强制修正：只要有 play/end，就是战斗，无视 screen_type 写什么
+    if 'play' in cmds or 'end' in cmds:
+        screen_type = 'COMBAT'
+    else:
+        screen_type = raw_screen_type
+        
+    screens = ['NONE', 'COMBAT', 'MAP', 'EVENT', 'SHOP', 'REST', 'COMBAT_REWARD', 'BOSS_REWARD']
+    
+    for i, s_name in enumerate(screens):
+        if s_name == screen_type:
+            obs[121 + i] = 1.0
+        else:
+            obs[121 + i] = 0.0
 
     return obs

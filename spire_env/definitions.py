@@ -17,4 +17,4 @@ class ActionIndex:
 # 观察空间定义
 class ObservationConfig:
     # 向量总长度 (与 state_encoder 保持一致)
-    SIZE = 128
+    SIZE = 130

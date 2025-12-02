@@ -203,21 +203,48 @@ class SlayTheSpireEnv(gym.Env):
             time.sleep(0.02)
 
     def _ensure_combat_ready(self):
-        """等待手牌填充"""
+        """
+        [增强版] 战斗就绪检查
+        只要处于战斗状态，就必须死等手牌填充完毕，防止 AI 开局空过。
+        """
         if not self.last_state: return
-        cmds = self.last_state.get('available_commands', [])
-        if 'play' not in cmds: return
         
-        for _ in range(40):
+        # 1. 判定是否处于战斗中
+        # 使用 room_phase 判断更准确，因为它比 available_commands 更早更新
+        game = self.last_state.get('game_state', {})
+        room_phase = game.get('room_phase', '')
+        cmds = self.last_state.get('available_commands', [])
+        
+        is_combat = (room_phase == 'COMBAT') or ('play' in cmds) or ('end' in cmds)
+        
+        if not is_combat:
+            return
+        
+        # 2. 循环检查手牌
+        # 如果是战斗开始，或者新回合，手牌通常不为0
+        # 除非牌堆和弃牌堆真的都没牌了
+        for _ in range(100): # 最多等 5 秒 (足够了吧？)
             combat = self.last_state.get('game_state', {}).get('combat_state', {})
             hand = combat.get('hand', [])
             draw = combat.get('draw_pile', [])
             discard = combat.get('discard_pile', [])
-            # 只要手牌有了，或者真的没牌可抽了
-            if len(hand) > 0 or (len(draw) == 0 and len(discard) == 0): return
+            
+            # 核心通过条件：
+            # A. 手里有牌了 -> OK
+            # B. 手里没牌，但抽牌堆和弃牌堆也都空了 (真的没牌可抽) -> OK
+            if len(hand) > 0:
+                return
+            if len(draw) == 0 and len(discard) == 0:
+                return
+                
+            # 还在发牌动画中，继续等
             time.sleep(0.05)
             self.conn.send_command("state")
             self.last_state = self.conn.receive_state()
+            
+        # 如果超时了还是一张牌都没有，那可能是出 bug 了或者真的是空手流
+        # 打印个警告，然后放行
+        self.conn.log("警告：战斗发牌等待超时 (手牌仍为0)")
 
     def _action_to_command(self, action):
         if not self.last_state: return None
@@ -227,7 +254,18 @@ class SlayTheSpireEnv(gym.Env):
         if action == 10 and 'end' in cmds: return "end"
         
         if 'play' in cmds:
-            if 11 <= action <= 13: return f"potion {action-11} 0"
+            # [核心修复] 药水指令格式修正
+            if 11 <= action <= 13:
+                potion_idx = action - 11
+                # 寻找第一个活着的怪物作为目标
+                target_idx = 0
+                monsters = combat.get('monsters', [])
+                for i, m in enumerate(monsters):
+                    if not m.get('is_gone') and not m.get('half_dead'):
+                        target_idx = i
+                        break
+                # 正确格式: potion use [槽位] [目标]
+                return f"potion use {potion_idx} {target_idx}"
             if action < 10:
                 hand = combat.get('hand', [])
                 if action >= len(hand): return None
