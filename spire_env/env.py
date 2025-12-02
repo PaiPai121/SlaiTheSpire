@@ -3,403 +3,299 @@ import time
 import gymnasium as gym
 from gymnasium import spaces
 from .interface import Connection
-from utils.state_encoder import encode_state, OBSERVATION_SIZE
+from .definitions import ObservationConfig, ActionIndex
+from utils.state_encoder import encode_state
+from utils.action_mapper import ActionMapper
 
 class SlayTheSpireEnv(gym.Env):
     def __init__(self):
         super(SlayTheSpireEnv, self).__init__()
         self.conn = Connection()
-        self.action_space = spaces.Discrete(14)
-        self.observation_space = spaces.Box(low=-1.0, high=1000.0, shape=(OBSERVATION_SIZE,), dtype=np.float32)
+        self.mapper = ActionMapper()
+        
+        self.action_space = spaces.Discrete(ActionIndex.TOTAL_ACTIONS)
+        self.observation_space = spaces.Box(
+            low=-5.0, high=1000.0, 
+            shape=(ObservationConfig.SIZE,), 
+            dtype=np.float32
+        )
+        
         self.last_state = None
+        self.steps_since_reset = 0
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
-        self.conn.log("正在重置环境...")
-        self.conn.send_command("ready")
+        self.steps_since_reset = 0
+        self.conn.log(">>> 环境重置 >>>")
         
-        start_time = time.time()
-        while True:
-            # 30秒超时熔断
-            if time.time() - start_time > 30:
-                self.conn.log("重置超时，强行启动...")
-                break
+        # 1. 强力重置连接
+        self.conn.send_command("state")
+        state = self._get_latest_state(retry_limit=10)
+        
+        if not state:
+            self.conn.send_command("ready")
+            time.sleep(1.0)
+            state = self._get_latest_state()
 
-            self.conn.send_command("state")
-            state = self.conn.receive_state()
-            if not state:
-                time.sleep(0.05); continue
-            
-            cmds = state.get('available_commands', [])
-            
-            # 1. 看到 Start 直接开
-            if 'start' in cmds: break
-                
-            # 2. 过场点击 (稳健版)
-            # [修改] 将等待时间从 0.1 改为 0.5
-            # 给游戏足够的喘息时间来处理转场动画，防止点击被吞
-            if 'proceed' in cmds: self.conn.send_command("proceed"); time.sleep(0.5)
-            elif 'confirm' in cmds: self.conn.send_command("confirm"); time.sleep(0.5)
-            elif 'leave' in cmds: self.conn.send_command("leave"); time.sleep(0.5)
-            elif 'skip' in cmds: self.conn.send_command("skip"); time.sleep(0.5)
-            elif 'return' in cmds: self.conn.send_command("return"); time.sleep(0.5)
-            else: time.sleep(0.1)
+        if not state:
+            raise RuntimeError("无法连接到游戏，请确保 CommunicationMod 已启动")
 
-        self.conn.log("发送 Start 指令...")
-        self.conn.send_command("start ironclad")
+        self.last_state = state
         
-        # 地图生成等待 (保持 1.0 或 0.8)
-        time.sleep(1.0) 
+        # 2. 启动逻辑
+        cmds = state.get('available_commands', [])
+        if 'start' in cmds:
+            self.conn.send_command("start ironclad")
+            time.sleep(2.0)
+            state = self._get_latest_state()
         
-        self._block_until_interaction()
-        self._ensure_combat_ready()
+        # 3. 进入自动导航
+        self.last_state = self._process_non_combat(state)
         
-        if not self.last_state:
-            return np.zeros(OBSERVATION_SIZE, dtype=np.float32), {}
         return encode_state(self.last_state), {}
+
     def step(self, action):
+        self.steps_since_reset += 1
         prev_state = self.last_state
         
-        # --- [新增] 计算当前允许的所有动作 (Debug用) ---
-        # 我们临时把 prev_state 设为 current 来计算 mask，算完还原
-        temp_state = self.last_state
-        self.last_state = prev_state
-        current_mask = self.action_masks()
-        self.last_state = temp_state
+        # --- 1. 执行 AI 动作 ---
+        cmd = self.mapper.decode_action(action, prev_state)
         
-        # 把 [True, False, True...] 转换成 [0, 2...]
-        valid_actions = [i for i, m in enumerate(current_mask) if m]
-        valid_str = str(valid_actions)
+        # 如果当前状态已经是 None，说明上一步出问题了，强制刷新
+        if not cmd:
+            self.conn.log(f"⚠️ 动作解码失败 (Action {action})，尝试刷新状态...")
+            self.conn.send_command("state")
+            cmd = "state"
         
-        # 翻译指令
-        cmd = self._action_to_command(action)
-        
-        # --- 无效处理 ---
-        if cmd is None:
-            self._block_until_interaction()
-            self.conn.log(f"⚠️ [无效] Action {action} 不在许可列表 {valid_str} 中")
-            return encode_state(self.last_state), -0.1, False, False, {}
-        
-        # --- 执行 ---
         self.conn.send_command(cmd)
         
-        if "play" not in cmd and "end" not in cmd:
-            time.sleep(0.15)
-
-        # 智能阻塞
-        if action == 10 and "end" in cmd:
-            self._wait_for_turn_change(prev_state)
-        elif action < 10 and "play" in cmd:
-            self._wait_for_card_played(prev_state)
+        # 动画等待逻辑
+        if "play" in cmd:
+            self._wait_for_animation(0.6)
+        elif "end" in cmd:
+            self._wait_for_new_turn()
+        elif "potion" in cmd:
+            self._wait_for_animation(0.5)
         else:
-            self._block_until_interaction()
-            
-        # 战斗再次确认手牌
-        self._ensure_combat_ready()
+            time.sleep(0.2)
 
-        # --- 结算 ---
-        reward = self._calculate_reward(prev_state, self.last_state)
+        # --- 2. 获取新状态 ---
+        # 这里是关键：必须死等拿到有效状态
+        current_state = self._get_latest_state(retry_limit=20)
         
+        if not current_state:
+            # 如果真的拿不到状态，说明游戏可能崩了，或者 Mod 死了
+            self.conn.log("⚠️ 严重：连续多次获取状态失败！")
+            # 此时返回上一次的状态避免报错，但在 reward 里给个惩罚
+            return encode_state(prev_state), 0, True, False, {}
+
+        # --- 3. 处理非战斗环节 (自动导航) ---
+        # 这会一直运行直到下一次战斗开始
+        final_state = self._process_non_combat(current_state)
+        
+        # --- 4. 计算奖励 ---
+        step_reward = self._calculate_reward(prev_state, final_state)
+        
+        # 累加：如果在 process_non_combat 期间发生变化（如回血、进阶），也算分
+        # 注意：这里简化了，只对比 step 前后的状态
+        
+        self.last_state = final_state
+        
+        # --- 5. 终止条件 ---
         terminated = False
-        if self.last_state and 'game_state' in self.last_state:
-            screen = self.last_state['game_state'].get('screen_type')
+        if final_state and 'game_state' in final_state:
+            screen = final_state['game_state'].get('screen_type', 'NONE')
             if screen in ['GAME_OVER', 'VICTORY']:
                 terminated = True
-                if screen == 'VICTORY': reward += 100
-                else: reward -= 10
+                if screen == 'VICTORY': step_reward += 100
+                else: step_reward -= 10
+                self.conn.log(f"游戏结束: {screen}")
 
-        # --- 日志 ---
-        act_desc = self._get_action_name(action, prev_state)
-        status_desc = self._get_status_desc(prev_state)
-        
-        # [修改] 打印更详细的信息：状态 + 可选动作 + AI选择
-        # 只要有得分，或者动作是结束回合，或者处于战斗中，都打印
-        if reward != 0 or action == 10 or "战斗" in status_desc:
-            self.conn.log(f"{status_desc} | 可选:{valid_str} | AI选:{act_desc} | 得分:{reward:.2f}")
+        truncated = self.steps_since_reset > 2000
 
-        if not self.last_state:
-            return np.zeros(OBSERVATION_SIZE, dtype=np.float32), 0, True, False, {}
-            
-        return encode_state(self.last_state), reward, terminated, False, {}
+        return encode_state(final_state), step_reward, terminated, truncated, {}
 
     # =========================================================================
-    # 辅助函数
+    # 核心修复：更鲁棒的非战斗处理
+    # =========================================================================
+    def _process_non_combat(self, state):
+        """
+        死循环处理非战斗状态，直到：
+        1. 进入战斗 (COMBAT)
+        2. 游戏结束 (GAME_OVER/VICTORY)
+        3. 真的卡住了 (抛出异常或死等)
+        """
+        stuck_counter = 0
+        
+        while True:
+            # 0. 状态有效性检查 (防御性编程)
+            if not state or 'game_state' not in state or 'available_commands' not in state:
+                self.conn.log(f"⚠️ 状态无效 (None 或 缺字段)，正在重试... ({stuck_counter})")
+                self.conn.send_command("state")
+                time.sleep(0.5)
+                state = self._get_latest_state()
+                stuck_counter += 1
+                if stuck_counter > 10:
+                    # 如果连续 10 次都拿不到状态，尝试发个 return 盲修
+                    self.conn.send_command("return") 
+                continue
+
+            game_state = state['game_state']
+            screen = game_state.get('screen_type')
+            cmds = state.get('available_commands', [])
+            room_phase = game_state.get('room_phase', '')
+
+            # 1. 判定是否为战斗
+            # 只有当 screen 是 COMBAT 且 指令里确实有 play/end 时，才算准备好了
+            # 仅仅 screen=COMBAT 但 cmds=[] 是不行的
+            is_combat_screen = (screen == 'COMBAT') or (room_phase == 'COMBAT')
+            can_combat_act = ('play' in cmds) or ('end' in cmds)
+            
+            # 如果是游戏结束，直接返回
+            if screen in ['GAME_OVER', 'VICTORY']:
+                return state
+
+            # 如果确实进入了战斗模式，并且可以操作
+            if is_combat_screen and can_combat_act:
+                # 再次确认手牌
+                state = self._ensure_hand_drawn(state)
+                return state
+            
+            # 如果显示是战斗，但没指令 (比如正在发牌动画中)，等待
+            if is_combat_screen and not can_combat_act:
+                self.conn.log("进入战斗界面，但在等待指令...")
+                time.sleep(0.5)
+                self.conn.send_command("state")
+                state = self._get_latest_state()
+                continue
+
+            # 2. 非战斗决策
+            action_cmd = None
+            
+            # 优先点确认/继续
+            for kw in ['confirm', 'proceed', 'leave', 'start', 'next']:
+                if kw in cmds: 
+                    action_cmd = kw; break
+            
+            # 其次选选项
+            if not action_cmd and 'choose' in cmds:
+                action_cmd = "choose 0"
+            
+            # 再次尝试 return/skip
+            if not action_cmd:
+                if 'return' in cmds: action_cmd = 'return'
+                elif 'skip' in cmds: action_cmd = 'skip'
+
+            # 3. 执行决策
+            if action_cmd:
+                self.conn.log(f"[Auto] {screen} -> {action_cmd}")
+                self.conn.send_command(action_cmd)
+                stuck_counter = 0 # 重置卡死计数器
+                
+                # 动态等待：地图稍微久一点
+                wait_t = 0.5 if screen == 'MAP' else 0.2
+                time.sleep(wait_t)
+                state = self._get_latest_state()
+            else:
+                # [关键修复] 如果没指令，千万不要 return，而是死等刷新
+                stuck_counter += 1
+                if stuck_counter % 5 == 0:
+                    self.conn.log(f"⚠️ 卡在界面: {screen}, Cmds: {cmds} | 正在重试...")
+                
+                self.conn.send_command("state")
+                time.sleep(0.5)
+                state = self._get_latest_state()
+                
+        return state
+
+    # =========================================================================
+    # 辅助函数优化
     # =========================================================================
     
-    def _get_status_desc(self, state):
-        """[修复版] 优先利用指令列表判断状态，解决转场时的显示Bug"""
-        if not state: return "[无数据]"
-        
-        cmds = state.get('available_commands', [])
-        game = state.get('game_state', {})
-        screen = game.get('screen_type', 'UNK')
-        
-        # [核心修改] 只要能打牌或能结束回合，那就是战斗！
-        # 这比 screen_type 更准，因为指令是实时的
-        if 'play' in cmds or 'end' in cmds:
-            combat = game.get('combat_state', {})
-            player = combat.get('player', {})
-            hand = combat.get('hand', [])
-            e = player.get('energy', '?')
-            hp = player.get('current_hp', '?')
-            return f"[战斗 HP:{hp} E:{e} 手牌:{len(hand)}]"
-        
-        # 非战斗状态判断
-        if screen == 'MAP': return "[地图选择]"
-        elif screen == 'EVENT': return "[随机事件]"
-        elif screen == 'SHOP': return f"[商店 Gold:{game.get('gold',0)}]"
-        elif 'REST': return "[篝火休息]"
-        elif 'COMBAT_REWARD' in screen or 'BOSS_REWARD' in screen: return "[战利品]"
-        
-        return f"[{screen}]"
-
-    def _block_until_interaction(self):
-        timeout = 60.0; start_t = time.time()
-        while True:
-            self.conn.send_command("state")
-            state = self.conn.receive_state()
-            if not state: time.sleep(0.02); continue
-            cmds = state.get('available_commands', [])
-            can_act = any(c in cmds for c in ['play', 'choose', 'proceed', 'end', 'confirm', 'leave', 'start'])
-            if can_act:
-                self.last_state = state; break
-            if time.time() - start_t > timeout: self.last_state = state; break
-            time.sleep(0.02)
-
-    def _wait_for_turn_change(self, prev_state):
-        timeout = 60.0; start_t = time.time()
-        prev_turn = prev_state.get('game_state', {}).get('combat_state', {}).get('turn', 0)
-        while True:
-            self.conn.send_command("state")
-            state = self.conn.receive_state()
-            if not state: time.sleep(0.02); continue
-            cmds = state.get('available_commands', [])
+    def _get_latest_state(self, retry_limit=5):
+        """
+        获取状态，带有极强的重试机制。
+        只有当返回的 JSON 包含 'available_commands' 时才视为有效。
+        """
+        for i in range(retry_limit):
+            s = self.conn.receive_state()
             
-            # 战斗结束
-            if any(c in cmds for c in ['proceed', 'confirm', 'leave', 'start']):
-                self.last_state = state; break
+            # 检查是否为有效状态
+            if s and isinstance(s, dict) and 'available_commands' in s:
+                return s
             
-            # 回合改变
-            curr_turn = state.get('game_state', {}).get('combat_state', {}).get('turn', 0)
-            if curr_turn > prev_turn and 'play' in cmds:
-                self.last_state = state
-                self._ensure_combat_ready() # 确保新回合牌发下来了
-                break
+            # 如果无效，稍微等一下再读（可能是粘包或者还在传输）
+            time.sleep(0.1)
+            
+            # 每 3 次失败主动请求一次刷新
+            if i % 3 == 2:
+                self.conn.send_command("state")
                 
-            if time.time() - start_t > timeout: self.last_state = state; break
-            time.sleep(0.05)
+        return None # 真的拿不到
 
-    def _wait_for_card_played(self, prev_state):
-        timeout = 2.0; start_t = time.time()
-        prev_hand = len(prev_state.get('game_state', {}).get('combat_state', {}).get('hand', []))
-        while True:
-            self.conn.send_command("state")
-            state = self.conn.receive_state()
-            if not state: time.sleep(0.02); continue
-            curr_hand = len(state.get('game_state', {}).get('combat_state', {}).get('hand', []))
-            if curr_hand != prev_hand: self.last_state = state; break
-            if 'play' not in state.get('available_commands', []): self.last_state = state; break
-            if time.time() - start_t > timeout: self.last_state = state; break
-            time.sleep(0.02)
-
-    def _ensure_combat_ready(self):
-        """
-        [增强版] 战斗就绪检查
-        只要处于战斗状态，就必须死等手牌填充完毕，防止 AI 开局空过。
-        """
-        if not self.last_state: return
-        
-        # 1. 判定是否处于战斗中
-        # 使用 room_phase 判断更准确，因为它比 available_commands 更早更新
-        game = self.last_state.get('game_state', {})
-        room_phase = game.get('room_phase', '')
-        cmds = self.last_state.get('available_commands', [])
-        
-        is_combat = (room_phase == 'COMBAT') or ('play' in cmds) or ('end' in cmds)
-        
-        if not is_combat:
-            return
-        
-        # 2. 循环检查手牌
-        # 如果是战斗开始，或者新回合，手牌通常不为0
-        # 除非牌堆和弃牌堆真的都没牌了
-        for _ in range(100): # 最多等 5 秒 (足够了吧？)
-            combat = self.last_state.get('game_state', {}).get('combat_state', {})
+    def _ensure_hand_drawn(self, state):
+        for _ in range(20):
+            combat = state.get('game_state', {}).get('combat_state', {})
             hand = combat.get('hand', [])
             draw = combat.get('draw_pile', [])
             discard = combat.get('discard_pile', [])
             
-            # 核心通过条件：
-            # A. 手里有牌了 -> OK
-            # B. 手里没牌，但抽牌堆和弃牌堆也都空了 (真的没牌可抽) -> OK
-            if len(hand) > 0:
-                return
-            if len(draw) == 0 and len(discard) == 0:
-                return
-                
-            # 还在发牌动画中，继续等
-            time.sleep(0.05)
+            if len(hand) > 0 or (len(draw) == 0 and len(discard) == 0):
+                return state
+            
+            time.sleep(0.1)
             self.conn.send_command("state")
-            self.last_state = self.conn.receive_state()
+            state = self._get_latest_state() or state
+        return state
+
+    def _wait_for_animation(self, duration):
+        time.sleep(duration)
+
+    def _wait_for_new_turn(self):
+        # 简单粗暴的等待：发 end 后，一直查状态，直到 'play' 出现
+        time.sleep(0.5)
+        for _ in range(50): # 10秒超时
+            self.conn.send_command("state")
+            state = self._get_latest_state()
+            if not state: continue
             
-        # 如果超时了还是一张牌都没有，那可能是出 bug 了或者真的是空手流
-        # 打印个警告，然后放行
-        self.conn.log("警告：战斗发牌等待超时 (手牌仍为0)")
-
-    def _action_to_command(self, action):
-        if not self.last_state: return None
-        cmds = self.last_state.get('available_commands', [])
-        combat = self.last_state.get('game_state', {}).get('combat_state', {})
-        
-        if action == 10 and 'end' in cmds: return "end"
-        
-        if 'play' in cmds:
-            # [核心修复] 药水指令格式修正
-            if 11 <= action <= 13:
-                potion_idx = action - 11
-                # 寻找第一个活着的怪物作为目标
-                target_idx = 0
-                monsters = combat.get('monsters', [])
-                for i, m in enumerate(monsters):
-                    if not m.get('is_gone') and not m.get('half_dead'):
-                        target_idx = i
-                        break
-                # 正确格式: potion use [槽位] [目标]
-                return f"potion use {potion_idx} {target_idx}"
-            if action < 10:
-                hand = combat.get('hand', [])
-                if action >= len(hand): return None
-                card = hand[action]
-                target = 0
-                if card.get('has_target'):
-                    monsters = combat.get('monsters', [])
-                    for i, m in enumerate(monsters):
-                        if not m.get('is_gone') and not m.get('half_dead'):
-                            target = i; break
-                    return f"play {action+1} {target}"
-                return f"play {action+1}"
-
-        if 'choose' in cmds:
-            if action == 10:
-                for c in ['confirm', 'leave', 'return', 'cancel', 'proceed', 'skip']:
-                    if c in cmds: return c
-                return "state"
-            return f"choose {action}"
-
-        for c in ['proceed', 'confirm', 'leave', 'skip', 'return', 'start']:
-            if c in cmds: return c
+            cmds = state.get('available_commands', [])
+            screen = state.get('game_state', {}).get('screen_type')
             
-        if action == 10: return "state"
-        return None
+            if screen in ['GAME_OVER', 'VICTORY']: return
+            if 'play' in cmds: return # 我的回合
+            
+            time.sleep(0.2)
 
     def action_masks(self):
-        mask = [False] * 14
-        if not self.last_state: return mask
-        
-        cmds = self.last_state.get('available_commands', [])
-        game = self.last_state.get('game_state', {})
-        
-        # --- [核心修复] 全局检查 End ---
-        # 无论处于什么模式 (Play/Choose/Confirm)，只要有 'end' 指令，就允许动作 10
-        if 'end' in cmds:
-            mask[10] = True
+        return self.mapper.get_mask(self.last_state)
 
-        # --- 场景 A: 战斗 (打牌/喝药) ---
-        if 'play' in cmds:
-            combat = game.get('combat_state', {})
-            hand = combat.get('hand', [])
-            energy = combat.get('player', {}).get('energy', 0)
-            
-            for i in range(len(hand)):
-                if i < 10:
-                    c = hand[i]
-                    cost = c.get('cost', 0)
-                    req = cost if cost >= 0 else 0
-                    if c.get('is_playable') and cost != -2 and energy >= req:
-                        mask[i] = True
-            
-            # 药水
-            pots = game.get('potions', [])
-            for i in range(len(pots)):
-                if i < 3 and pots[i].get('can_use'): mask[11+i] = True
-
-        # --- 场景 B: 选择 (商店/事件) ---
-        elif 'choose' in cmds:
-            choices = game.get('choice_list', [])
-            for i in range(len(choices)): 
-                if i < 10: mask[i] = True
-            
-            # 允许离开/取消 (叠加在动作 10 上)
-            if any(c in cmds for c in ['leave', 'cancel', 'return', 'proceed', 'skip', 'confirm']):
-                mask[10] = True
-            
-            if not any(mask): mask[0] = True
-
-        # --- 场景 C: 过场 (Confirm/Proceed...) ---
-        # 注意：这里改成了 if 而不是 elif，防止上面的逻辑没覆盖到
-        # 但为了避免逻辑冲突，通常保持 elif，但在内部补全 mask[0]
-        elif any(c in cmds for c in ['proceed', 'confirm', 'leave', 'skip', 'return', 'start']):
-            mask[0] = True
-            
-            # [双保险] 如果这里有 confirm，通常动作 0 是 confirm
-            # 但如果同时也有 end (如你遇到的情况)，上面的全局检查已经开启了 mask[10]
-            # 所以 AI 既可以选 0 (confirm) 也可以选 10 (end)
-        
-        else:
-            # 兜底：如果上面都没命中，且没有 end (mask[10]还是False)，那就强制开一个
-            if not any(mask): mask[10] = True
-
-        return mask
-
-    def _get_action_name(self, action, state):
-        if not state: return f"未知 ({action})"
-        cmds = state.get('available_commands', [])
-        
-        if 'play' in cmds or 'end' in cmds:
-            if action == 10: return "【结束回合】"
-            if 11 <= action <= 13: return f"药水 {action-11}"
-            try:
-                hand = state['game_state']['combat_state']['hand']
-                if action < len(hand): return f"打出: {hand[action].get('name')}"
-            except: pass
-            return f"战斗操作 {action}"
-            
-        if action == 10: return "【离开/继续】"
-        if 'choose' in cmds:
-            try:
-                c = state['game_state']['choice_list'][action]
-                return f"选择: {str(c)[:15]}"
-            except: pass
-        return f"交互 {action}"
-
-    def _calculate_reward(self, prev_json, next_json):
-        if not prev_json or not next_json: return 0
-        reward = 0.0
+    def _calculate_reward(self, prev, curr):
+        if not prev or not curr: return 0
+        r = 0
         try:
-            game_prev = prev_json.get('game_state', {})
-            game_next = next_json.get('game_state', {})
+            # 简单的血量/杀怪逻辑
+            game_p = prev.get('game_state', {})
+            game_c = curr.get('game_state', {})
             
-            f_prev = game_prev.get('floor', 0)
-            f_next = game_next.get('floor', 0)
-            if f_next > f_prev: reward += 5.0
+            # 进层奖励
+            if game_c.get('floor', 0) > game_p.get('floor', 0):
+                r += 5.0
 
-            if 'combat_state' not in game_prev or 'combat_state' not in game_next: return reward
-            combat_prev = game_prev['combat_state']
-            combat_next = game_next['combat_state']
-            
-            hp_p = combat_prev.get('player', {}).get('current_hp', 0)
-            hp_n = combat_next.get('player', {}).get('current_hp', 0)
-            if hp_n < hp_p: reward -= (hp_p - hp_n) * 2.0
-            
-            m_prev = combat_prev.get('monsters', [])
-            m_next = combat_next.get('monsters', [])
-            alive_p = len([m for m in m_prev if not m.get('is_gone') and not m.get('is_dying')])
-            alive_n = len([m for m in m_next if not m.get('is_gone') and not m.get('is_dying')])
-            if alive_n < alive_p: reward += (alive_p - alive_n) * 50.0
+            if 'combat_state' in game_p and 'combat_state' in game_c:
+                cp = game_p['combat_state']
+                cc = game_c['combat_state']
                 
-            def get_total_hp(monsters):
-                return sum([m.get('current_hp', 0) for m in monsters if not m.get('is_gone') and not m.get('is_dying')])
-            dmg = get_total_hp(m_prev) - get_total_hp(m_next)
-            if dmg > 0: reward += dmg * 1.0 
+                # 杀怪
+                mon_p = [m for m in cp.get('monsters',[]) if not m['is_gone']]
+                mon_c = [m for m in cc.get('monsters',[]) if not m['is_gone']]
+                if len(mon_c) < len(mon_p):
+                    r += 20.0
+                
+                # 掉血惩罚
+                hp_p = cp['player']['current_hp']
+                hp_c = cc['player']['current_hp']
+                if hp_c < hp_p:
+                    r -= (hp_p - hp_c) * 0.2
         except: pass
-        return reward
+        return r

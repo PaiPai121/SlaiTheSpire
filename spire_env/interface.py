@@ -27,8 +27,10 @@ class Connection:
     def log(self, message):
         """记录日志到文件"""
         timestamp = time.strftime('%H:%M:%S')
-        with open(self.log_path, "a", encoding='utf-8') as f:
-            f.write(f"[{timestamp}] {message}\n")
+        try:
+            with open(self.log_path, "a", encoding='utf-8') as f:
+                f.write(f"[{timestamp}] {message}\n")
+        except: pass # 防止日志写入导致程序崩溃
 
     def receive_state(self):
         """读取状态，带去重功能"""
@@ -59,7 +61,7 @@ class Connection:
 
     def send_command(self, cmd):
         """发送指令"""
-        print(cmd, flush=True)
+        print(cmd.strip(), flush=True)
         
         # --- [优化] 不记录心跳包 ---
         # "state" 指令只是为了刷新，刷屏太烦人，不记日志
