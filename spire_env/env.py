@@ -28,7 +28,6 @@ class SlayTheSpireEnv(gym.Env):
         self.steps_since_reset = 0
         self.conn.log(">>> 环境重置 >>>")
         
-        # 1. 强力重置连接
         self.conn.send_command("state")
         state = self._get_latest_state(retry_limit=10)
         
@@ -38,70 +37,85 @@ class SlayTheSpireEnv(gym.Env):
             state = self._get_latest_state()
 
         if not state:
-            raise RuntimeError("无法连接到游戏，请确保 CommunicationMod 已启动")
+            raise RuntimeError("无法连接到游戏")
 
         self.last_state = state
         
-        # 2. 启动逻辑
         cmds = state.get('available_commands', [])
         if 'start' in cmds:
             self.conn.send_command("start ironclad")
             time.sleep(2.0)
             state = self._get_latest_state()
         
-        # 3. 进入自动导航
         self.last_state = self._process_non_combat(state)
-        
         return encode_state(self.last_state), {}
 
     def step(self, action):
         self.steps_since_reset += 1
         prev_state = self.last_state
         
-        # --- 1. 执行 AI 动作 ---
-        cmd = self.mapper.decode_action(action, prev_state)
+        # ============================================================
+        # [日志阶段 1] 决策：当前状态 + 可选动作 + AI选择
+        # ============================================================
         
-        # 如果当前状态已经是 None，说明上一步出问题了，强制刷新
+        # 1. 获取当前简报 (如: Combat HP:75 E:3)
+        state_desc = self._get_state_summary(prev_state)
+        
+        # 2. 获取所有合法动作的名称
+        valid_mask = self.mapper.get_mask(prev_state)
+        valid_actions_idx = [i for i, m in enumerate(valid_mask) if m]
+        # 只显示前5个选项防止日志太长，或者根据你的喜好调整
+        valid_names = [self.mapper.get_action_name(i, prev_state) for i in valid_actions_idx]
+        
+        # 3. 获取 AI 选择的动作名称
+        action_name = self.mapper.get_action_name(action, prev_state)
+        
+        # 打印决策日志
+        self.conn.log(f"┌─ [Decision] {state_desc}")
+        self.conn.log(f"├─ 可选: {valid_names}")
+        self.conn.log(f"└─ AI选: {action_name} (Idx: {action})")
+
+        # ============================================================
+        # [执行阶段] 发送指令 -> 等待 -> 接收新状态
+        # ============================================================
+        
+        cmd = self.mapper.decode_action(action, prev_state)
         if not cmd:
-            self.conn.log(f"⚠️ 动作解码失败 (Action {action})，尝试刷新状态...")
-            self.conn.send_command("state")
+            self.conn.log(f"⚠️ 动作解码无效，尝试刷新")
             cmd = "state"
         
         self.conn.send_command(cmd)
         
-        # 动画等待逻辑
-        if "play" in cmd:
-            self._wait_for_animation(0.6)
-        elif "end" in cmd:
-            self._wait_for_new_turn()
-        elif "potion" in cmd:
-            self._wait_for_animation(0.5)
-        else:
-            time.sleep(0.2)
+        # 动画/回合等待
+        if "play" in cmd: self._wait_for_animation(0.6)
+        elif "end" in cmd: self._wait_for_new_turn()
+        elif "potion" in cmd: self._wait_for_animation(0.5)
+        else: time.sleep(0.2)
 
-        # --- 2. 获取新状态 ---
-        # 这里是关键：必须死等拿到有效状态
+        # 获取新状态
         current_state = self._get_latest_state(retry_limit=20)
-        
         if not current_state:
-            # 如果真的拿不到状态，说明游戏可能崩了，或者 Mod 死了
-            self.conn.log("⚠️ 严重：连续多次获取状态失败！")
-            # 此时返回上一次的状态避免报错，但在 reward 里给个惩罚
+            self.conn.log("⚠️ 严重：获取状态失败")
             return encode_state(prev_state), 0, True, False, {}
 
-        # --- 3. 处理非战斗环节 (自动导航) ---
-        # 这会一直运行直到下一次战斗开始
+        # 处理自动过图
         final_state = self._process_non_combat(current_state)
         
-        # --- 4. 计算奖励 ---
+        # ============================================================
+        # [日志阶段 2] 结果：奖励 + 状态变化
+        # ============================================================
+        
         step_reward = self._calculate_reward(prev_state, final_state)
-        
-        # 累加：如果在 process_non_combat 期间发生变化（如回血、进阶），也算分
-        # 注意：这里简化了，只对比 step 前后的状态
-        
         self.last_state = final_state
         
-        # --- 5. 终止条件 ---
+        # 打印结果日志
+        if step_reward != 0:
+            self.conn.log(f"==> [Result] 获得奖励: {step_reward:.2f}")
+        else:
+            # 如果没奖励（比如打了张防御牌），也可以简单记录一下
+            # self.conn.log(f"==> [Result] 动作完成")
+            pass
+
         terminated = False
         if final_state and 'game_state' in final_state:
             screen = final_state['game_state'].get('screen_type', 'NONE')
@@ -112,32 +126,51 @@ class SlayTheSpireEnv(gym.Env):
                 self.conn.log(f"游戏结束: {screen}")
 
         truncated = self.steps_since_reset > 2000
-
         return encode_state(final_state), step_reward, terminated, truncated, {}
 
-    # =========================================================================
-    # 核心修复：更鲁棒的非战斗处理
-    # =========================================================================
-    def _process_non_combat(self, state):
-        """
-        死循环处理非战斗状态，直到：
-        1. 进入战斗 (COMBAT)
-        2. 游戏结束 (GAME_OVER/VICTORY)
-        3. 真的卡住了 (抛出异常或死等)
-        """
-        stuck_counter = 0
+    # --- 辅助函数：状态简报 (修复版) ---
+    def _get_state_summary(self, state):
+        if not state: return "Unknown"
+        game = state.get('game_state', {})
+        screen = game.get('screen_type', 'Unknown')
         
+        # 只要看起来像战斗（即便是 Combat Reward 之前的瞬间）
+        if screen == 'COMBAT' or 'combat_state' in game:
+            try:
+                combat = game.get('combat_state')
+                # 1. 这种情况下可能 combat_state 是 None
+                if not combat: 
+                    return f"[战斗] (数据同步中...)"
+                
+                # 2. 安全读取玩家数据
+                p = combat.get('player', {})
+                hp = p.get('current_hp', '?')
+                max_hp = p.get('max_hp', '?')
+                e = p.get('energy', '?')
+                
+                # 3. 安全读取怪物数据
+                m_list = combat.get('monsters', [])
+                if m_list:
+                    alive_m = len([m for m in m_list if not m.get('is_gone') and not m.get('is_dying')])
+                else:
+                    alive_m = 0
+                    
+                return f"[战斗] HP:{hp}/{max_hp} E:{e} 怪:{alive_m}只"
+            except Exception as e:
+                # 如果还是报错，打印具体是什么错，方便排查
+                return f"[战斗] (Err: {str(e)})"
+        
+        return f"[{screen}]"
+
+    # --- 以下保持之前的逻辑不变 ---
+    def _process_non_combat(self, state):
+        stuck_counter = 0
         while True:
-            # 0. 状态有效性检查 (防御性编程)
             if not state or 'game_state' not in state or 'available_commands' not in state:
-                self.conn.log(f"⚠️ 状态无效 (None 或 缺字段)，正在重试... ({stuck_counter})")
-                self.conn.send_command("state")
-                time.sleep(0.5)
-                state = self._get_latest_state()
-                stuck_counter += 1
-                if stuck_counter > 10:
-                    # 如果连续 10 次都拿不到状态，尝试发个 return 盲修
-                    self.conn.send_command("return") 
+                # self.conn.log(f"⚠️ 状态无效重试 ({stuck_counter})") # 稍微减少刷屏
+                self.conn.send_command("state"); time.sleep(0.5)
+                state = self._get_latest_state(); stuck_counter += 1
+                if stuck_counter > 10: self.conn.send_command("return") 
                 continue
 
             game_state = state['game_state']
@@ -145,93 +178,46 @@ class SlayTheSpireEnv(gym.Env):
             cmds = state.get('available_commands', [])
             room_phase = game_state.get('room_phase', '')
 
-            # 1. 判定是否为战斗
-            # 只有当 screen 是 COMBAT 且 指令里确实有 play/end 时，才算准备好了
-            # 仅仅 screen=COMBAT 但 cmds=[] 是不行的
             is_combat_screen = (screen == 'COMBAT') or (room_phase == 'COMBAT')
             can_combat_act = ('play' in cmds) or ('end' in cmds)
             
-            # 如果是游戏结束，直接返回
-            if screen in ['GAME_OVER', 'VICTORY']:
-                return state
-
-            # 如果确实进入了战斗模式，并且可以操作
+            if screen in ['GAME_OVER', 'VICTORY']: return state
             if is_combat_screen and can_combat_act:
-                # 再次确认手牌
                 state = self._ensure_hand_drawn(state)
                 return state
             
-            # 如果显示是战斗，但没指令 (比如正在发牌动画中)，等待
             if is_combat_screen and not can_combat_act:
-                self.conn.log("进入战斗界面，但在等待指令...")
-                time.sleep(0.5)
-                self.conn.send_command("state")
-                state = self._get_latest_state()
-                continue
+                # self.conn.log("等待指令...") # 减少刷屏
+                time.sleep(0.5); self.conn.send_command("state")
+                state = self._get_latest_state(); continue
 
-            # 2. 非战斗决策
             action_cmd = None
-            
-            # 优先点确认/继续
             for kw in ['confirm', 'proceed', 'leave', 'start', 'next']:
-                if kw in cmds: 
-                    action_cmd = kw; break
-            
-            # 其次选选项
-            if not action_cmd and 'choose' in cmds:
-                action_cmd = "choose 0"
-            
-            # 再次尝试 return/skip
+                if kw in cmds: action_cmd = kw; break
+            if not action_cmd and 'choose' in cmds: action_cmd = "choose 0"
             if not action_cmd:
                 if 'return' in cmds: action_cmd = 'return'
                 elif 'skip' in cmds: action_cmd = 'skip'
 
-            # 3. 执行决策
             if action_cmd:
                 self.conn.log(f"[Auto] {screen} -> {action_cmd}")
                 self.conn.send_command(action_cmd)
-                stuck_counter = 0 # 重置卡死计数器
-                
-                # 动态等待：地图稍微久一点
+                stuck_counter = 0
                 wait_t = 0.5 if screen == 'MAP' else 0.2
-                time.sleep(wait_t)
-                state = self._get_latest_state()
+                time.sleep(wait_t); state = self._get_latest_state()
             else:
-                # [关键修复] 如果没指令，千万不要 return，而是死等刷新
                 stuck_counter += 1
-                if stuck_counter % 5 == 0:
-                    self.conn.log(f"⚠️ 卡在界面: {screen}, Cmds: {cmds} | 正在重试...")
-                
-                self.conn.send_command("state")
-                time.sleep(0.5)
+                self.conn.send_command("state"); time.sleep(0.5)
                 state = self._get_latest_state()
-                
         return state
 
-    # =========================================================================
-    # 辅助函数优化
-    # =========================================================================
-    
     def _get_latest_state(self, retry_limit=5):
-        """
-        获取状态，带有极强的重试机制。
-        只有当返回的 JSON 包含 'available_commands' 时才视为有效。
-        """
         for i in range(retry_limit):
             s = self.conn.receive_state()
-            
-            # 检查是否为有效状态
-            if s and isinstance(s, dict) and 'available_commands' in s:
-                return s
-            
-            # 如果无效，稍微等一下再读（可能是粘包或者还在传输）
+            if s and isinstance(s, dict) and 'available_commands' in s: return s
             time.sleep(0.1)
-            
-            # 每 3 次失败主动请求一次刷新
-            if i % 3 == 2:
-                self.conn.send_command("state")
-                
-        return None # 真的拿不到
+            if i % 3 == 2: self.conn.send_command("state")
+        return None
 
     def _ensure_hand_drawn(self, state):
         for _ in range(20):
@@ -239,12 +225,8 @@ class SlayTheSpireEnv(gym.Env):
             hand = combat.get('hand', [])
             draw = combat.get('draw_pile', [])
             discard = combat.get('discard_pile', [])
-            
-            if len(hand) > 0 or (len(draw) == 0 and len(discard) == 0):
-                return state
-            
-            time.sleep(0.1)
-            self.conn.send_command("state")
+            if len(hand) > 0 or (len(draw) == 0 and len(discard) == 0): return state
+            time.sleep(0.1); self.conn.send_command("state")
             state = self._get_latest_state() or state
         return state
 
@@ -252,19 +234,15 @@ class SlayTheSpireEnv(gym.Env):
         time.sleep(duration)
 
     def _wait_for_new_turn(self):
-        # 简单粗暴的等待：发 end 后，一直查状态，直到 'play' 出现
         time.sleep(0.5)
-        for _ in range(50): # 10秒超时
+        for _ in range(50):
             self.conn.send_command("state")
             state = self._get_latest_state()
             if not state: continue
-            
             cmds = state.get('available_commands', [])
             screen = state.get('game_state', {}).get('screen_type')
-            
             if screen in ['GAME_OVER', 'VICTORY']: return
-            if 'play' in cmds: return # 我的回合
-            
+            if 'play' in cmds: return
             time.sleep(0.2)
 
     def action_masks(self):
@@ -274,28 +252,74 @@ class SlayTheSpireEnv(gym.Env):
         if not prev or not curr: return 0
         r = 0
         try:
-            # 简单的血量/杀怪逻辑
             game_p = prev.get('game_state', {})
             game_c = curr.get('game_state', {})
             
-            # 进层奖励
-            if game_c.get('floor', 0) > game_p.get('floor', 0):
-                r += 5.0
+            # --- 1. 探索奖励 (过层) ---
+            if game_c.get('floor', 0) > game_p.get('floor', 0): 
+                r += 10.0
 
             if 'combat_state' in game_p and 'combat_state' in game_c:
                 cp = game_p['combat_state']
                 cc = game_c['combat_state']
                 
-                # 杀怪
+                # --- A. 计算怪物总威胁 (Incoming Damage) ---
+                # 我们需要查看上一帧(prev)怪物的意图，来判断刚才那个动作是否明智
+                monsters = cp.get('monsters', [])
+                total_incoming_dmg = 0
+                for m in monsters:
+                    if not m.get('is_gone') and 'ATTACK' in m.get('intent', ''):
+                        # move_adjusted_damage 是计算过易伤/虚弱后的最终伤害
+                        dmg = m.get('move_adjusted_damage', 0)
+                        times = m.get('move_hits', 1) #有些怪是连击
+                        total_incoming_dmg += (dmg * times)
+
+                # --- 2. 进攻奖励 (造成伤害) ---
+                def get_total_mon_hp(combat_st):
+                    return sum([m['current_hp'] for m in combat_st.get('monsters',[]) if not m['is_gone']])
+                
+                dmg_dealt = get_total_mon_hp(cp) - get_total_mon_hp(cc)
+                if dmg_dealt > 0:
+                    r += dmg_dealt * 0.15  # 稍微提高伤害权重，鼓励进攻
+                
+                # --- 3. [关键优化] 有效防御奖励 ---
+                block_p = cp['player'].get('block', 0)
+                block_c = cc['player'].get('block', 0)
+                block_gained = block_c - block_p
+                
+                if block_gained > 0:
+                    # 情况1: 敌人要打我 10血，我叠了 5甲 -> 有效防御 5
+                    # 情况2: 敌人要打我 5血， 我叠了 20甲 -> 有效防御 5 (多余的浪费了)
+                    # 情况3: 敌人不打我 (0血)，我叠了 5甲 -> 有效防御 0
+                    
+                    # 计算之前的缺口 (还需要多少甲才能防住)
+                    needed = max(0, total_incoming_dmg - block_p)
+                    
+                    # 真正的有效格挡是：我获得的甲 和 我还需要的甲 之间的较小值
+                    effective_block = min(block_gained, needed)
+                    
+                    if effective_block > 0:
+                        r += effective_block * 0.15 # 奖励有效防御
+                    else:
+                        # 如果完全是无效防御 (敌人没打我，或者甲已经溢出了还叠)
+                        # 给一个小小的惩罚，告诉AI不要浪费能量
+                        r -= 0.05 
+
+                # --- 4. 击杀奖励 ---
                 mon_p = [m for m in cp.get('monsters',[]) if not m['is_gone']]
                 mon_c = [m for m in cc.get('monsters',[]) if not m['is_gone']]
                 if len(mon_c) < len(mon_p):
-                    r += 20.0
-                
-                # 掉血惩罚
+                    r += 20.0 
+
+                # --- 5. 受伤惩罚 (这个最重要，教会它保命) ---
                 hp_p = cp['player']['current_hp']
                 hp_c = cc['player']['current_hp']
                 if hp_c < hp_p:
-                    r -= (hp_p - hp_c) * 0.2
-        except: pass
+                    loss = hp_p - hp_c
+                    # 掉血惩罚系数要大，痛了才长记性
+                    r -= loss * 1.0 
+
+        except Exception as e:
+            pass
+            
         return r
