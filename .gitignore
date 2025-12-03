@@ -2,3 +2,4 @@ venv
 models
 logs
 crash_log.txt
+spire_env/__pycache__/
