@@ -80,9 +80,19 @@ class ActionMapper:
         
         # 2. 战斗指令
         if 'play' in cmds:
-            # 药水
+            # --- [修复] 药水指令 ---
             if ActionIndex.POTION_START <= action <= ActionIndex.POTION_END:
-                return f"potion {action - ActionIndex.POTION_START} 0"
+                slot = action - ActionIndex.POTION_START
+                
+                # 寻找合法目标 (第一个活着的怪)
+                target = 0
+                monsters = combat.get('monsters', [])
+                for i, m in enumerate(monsters):
+                    if not m.get('is_gone') and not m.get('half_dead'):
+                        target = i
+                        break
+                
+                return f"potion {slot} {target}"
             
             # 打牌
             if action <= ActionIndex.CARD_END:
@@ -126,7 +136,13 @@ class ActionMapper:
         if is_combat:
             if action == ActionIndex.END_TURN: return "【结束回合】"
             if ActionIndex.POTION_START <= action <= ActionIndex.POTION_END:
-                return f"药水 {action - ActionIndex.POTION_START}"
+                # 尝试显示药水名字
+                try:
+                    p_idx = action - ActionIndex.POTION_START
+                    p_name = state['game_state']['potions'][p_idx]['name']
+                    return f"药水: {p_name}"
+                except:
+                    return f"药水 {action - ActionIndex.POTION_START}"
             try:
                 hand = state['game_state']['combat_state']['hand']
                 if action < len(hand): return f"打出: {hand[action].get('name')}"

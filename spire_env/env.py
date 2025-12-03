@@ -7,7 +7,7 @@ from .definitions import ObservationConfig, ActionIndex
 from utils.state_encoder import encode_state
 from utils.action_mapper import ActionMapper
 
-# 引入拆分后的逻辑
+# 引入逻辑模块
 from .logic import game_io, combat, navigator, reward
 
 class SlayTheSpireEnv(gym.Env):
@@ -84,24 +84,25 @@ class SlayTheSpireEnv(gym.Env):
         prev = self.last_state
         prev_turn = prev['game_state']['combat_state']['turn'] if 'combat_state' in prev['game_state'] else 0
 
-        # --- [新增] 打印可选动作 ---
+        # --- [新增] 详细状态日志 ---
         try:
-            # 获取 ActionMask
+            # 提取能量和手牌数
+            combat_st = prev.get('game_state', {}).get('combat_state', {})
+            curr_e = combat_st.get('player', {}).get('energy', 'N/A')
+            curr_h = len(combat_st.get('hand', []))
+            
+            # 获取动作名
+            aname = self.mapper.get_action_name(action, prev)
+            
+            # 获取可选动作列表 (用于Debug)
             mask = self.mapper.get_mask(prev)
-            # 解析所有为 True 的动作名称
-            valid_moves = []
-            for i, valid in enumerate(mask):
-                if valid:
-                    valid_moves.append(self.mapper.get_action_name(i, prev))
-            
-            # 获取当前 AI 选择的动作名称
-            action_name = self.mapper.get_action_name(action, prev)
-            
-            # 打印决策日志
-            self.conn.log(f"┌─ [State] 可选: {valid_moves}")
-            self.conn.log(f"└─ [Decision] AI选择: {action_name} (Idx: {action})")
-        except: 
-            pass
+            valid_moves = [self.mapper.get_action_name(i, prev) for i, m in enumerate(mask) if m]
+            # 缩略显示，防止太长
+            if len(valid_moves) > 5: valid_moves = valid_moves[:5] + ['...']
+
+            self.conn.log(f"┌─ [State] E:{curr_e} H:{curr_h} | 可选: {valid_moves}")
+            self.conn.log(f"└─ [Decision] AI选择: {aname}")
+        except: pass
 
         # 执行
         cmd = self.mapper.decode_action(action, prev) or "state"
@@ -117,13 +118,13 @@ class SlayTheSpireEnv(gym.Env):
         curr = game_io.get_latest_state(self.conn, retry_limit=20)
         if not curr: return encode_state(prev), 0, True, False, {}
 
-        # 自动过图
+        # 导航
         final = navigator.process_non_combat(self.conn, curr)
         
-        # --- [新增] 打印奖励 ---
+        # --- [新增] 奖励日志 ---
         rew = reward.calculate_reward(prev, final)
-        if abs(rew) > 0.01:
-            self.conn.log(f"==> [Reward] 获得奖励: {rew:.2f}")
+        if abs(rew) > 0:
+            self.conn.log(f"==> [Reward] {rew:.2f}")
 
         self.last_state = final
         
