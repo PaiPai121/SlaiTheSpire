@@ -1,15 +1,3 @@
-[CommunicationMod](https://github.com/ForgottenArbiter/CommunicationMod)
-配置文件目录：
-```bash
-https://github.com/kiooeht/ModTheSpire/wiki/SpireConfig
-```
-启动tensorboard
-```bash
-tensorboard --logdir logs/sb3
-```
-
-
-
 # 🗡️ Slay the Spire Reinforcement Learning (RL) Agent
 
 基于 **Gymnasium** 和 **Stable-Baselines3 (Maskable PPO)** 构建的《杀戮尖塔》强化学习训练环境。

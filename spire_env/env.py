@@ -21,7 +21,9 @@ class SlayTheSpireEnv(gym.Env):
 
     def reset(self, seed=None, options=None):
         """
-        [Reset V2] 包含防卡死变招逻辑
+        [Reset V4 - 智能决策版] 
+        不再瞎猜。根据 available_commands 准确判断该点什么。
+        核心逻辑：在结算界面，优先处理弹窗 (cancel/confirm)，其次才是继续 (proceed)。
         """
         super().reset(seed=seed)
         self.steps_since_reset = 0
@@ -29,16 +31,13 @@ class SlayTheSpireEnv(gym.Env):
         
         start_time = time.time()
         last_action_time = 0
-        last_screen = None
-        same_screen_count = 0 
         
         while True:
             # 1. 超时保护
             if time.time() - start_time > 60:
-                self.conn.log("⚠️ Reset 超时，尝试强制发送 return/cancel")
+                self.conn.log("⚠️ Reset 超时，尝试强制发送 return")
                 self.conn.send_command("return")
-                self.conn.send_command("cancel")
-                if time.time() - start_time > 70: 
+                if time.time() - start_time > 65: 
                     raise RuntimeError("Reset timeout - 无法回到游戏状态")
 
             # 2. 获取状态
@@ -52,60 +51,66 @@ class SlayTheSpireEnv(gym.Env):
             s = g.get('screen_type')
             cmds = state.get('available_commands', [])
             
-            # 卡顿计数
-            if s == last_screen: same_screen_count += 1
-            else: same_screen_count = 0; last_screen = s
-
-            if same_screen_count > 10 and same_screen_count % 10 == 0:
-                 self.conn.log(f"[Reset滞留] Screen: {s} | Count: {same_screen_count} | Cmds: {cmds}")
-
-            # 3. 退出条件
-            is_event_ready = (s == 'EVENT' and any(c in cmds for c in ['choose','proceed','leave']))
-            is_standard_screen = s in ['MAP', 'COMBAT', 'SHOP', 'REST']
-            has_play_cmd = 'play' in cmds
+            # 3. 退出条件 (成功进入可玩状态)
+            # 包括: 地图、战斗、商店、休息处，或者事件界面(且有选项)
+            is_ready = False
+            if s in ['MAP', 'COMBAT', 'SHOP', 'REST']: is_ready = True
+            if s == 'EVENT' and any(c in cmds for c in ['choose','proceed','leave']): is_ready = True
+            if 'play' in cmds: is_ready = True
             
-            if is_standard_screen or is_event_ready or has_play_cmd:
+            if is_ready:
                 self.conn.log(f">>> [Reset] 就绪! 当前界面: {s} <<<")
                 self.last_state = state
                 break
 
-            # 4. 主菜单逻辑
+            # 4. 主菜单逻辑 (快速开始)
             if s == 'MAIN_MENU' or 'start' in cmds:
-                if time.time() - last_action_time > 1.0:
+                if time.time() - last_action_time > 1.2:
                     self.conn.log(">>> [Reset] 主菜单 -> start ironclad")
                     self.conn.send_command("start ironclad")
                     last_action_time = time.time()
                 continue
 
-            # 5. 智能清理
-            nav = None
-            if s in ['GAME_OVER', 'VICTORY'] and same_screen_count > 5:
-                # 变招逻辑
-                cycle = same_screen_count % 4
-                if cycle == 0: nav = 'confirm'
-                elif cycle == 1: nav = 'return'
-                elif cycle == 2: nav = 'key enter'
-                else: nav = 'proceed'
-                self.conn.log(f"⚠️ [Reset] 界面卡死 ({s})，尝试变招: {nav}")
-            else:
-                prio = ['confirm', 'proceed', 'return', 'cancel', 'leave', 'click', 'skip']
-                if s in ['GAME_OVER', 'VICTORY']:
-                    if 'proceed' in cmds: nav = 'proceed'
-                    elif 'confirm' in cmds: nav = 'confirm'
-                else:
-                    for c in prio: 
-                        if c in cmds: nav = c; break
+            # ==================================================
+            # 5. 确定性清理逻辑 (Smart Cleanup)
+            # ==================================================
             
-            if nav:
-                cd = 0.8
-                if time.time() - last_action_time > cd:
-                    if not (s in ['GAME_OVER', 'VICTORY'] and same_screen_count > 5):
-                        self.conn.log(f"[Reset] 清理界面: {nav} (Screen: {s})")
+            # 冷却时间：结算界面给 1.5s 动画时间，其他界面 0.5s
+            wait_t = 1.5 if s in ['GAME_OVER', 'VICTORY'] else 0.5
+            
+            if time.time() - last_action_time > wait_t:
+                nav = None
+                
+                # --- [逻辑核心] 结算界面优先级 ---
+                if s in ['GAME_OVER', 'VICTORY']:
+                    # 1. 最高优先级：关闭解锁弹窗/确认信息
+                    # 注意：'return' 在结算界面通常等同于 ESC/Skip，很有用
+                    if 'confirm' in cmds: nav = 'confirm'
+                    elif 'cancel' in cmds: nav = 'cancel'
+                    elif 'return' in cmds: nav = 'return'
+                    
+                    # 2. 次级优先级：继续流程
+                    elif 'proceed' in cmds: nav = 'proceed'
+                    
+                    # 3. 保底：点击或离开
+                    elif 'leave' in cmds: nav = 'leave'
+                    elif 'skip' in cmds: nav = 'skip'
+                    
+                # --- 普通界面优先级 ---
+                else:
+                    # 标准顺序：确认 > 继续 > 返回 > 离开
+                    prio = ['confirm', 'proceed', 'return', 'cancel', 'leave', 'click', 'skip']
+                    for c in prio: 
+                        if c in cmds: 
+                            nav = c; break
+                
+                # 执行
+                if nav:
+                    self.conn.log(f"[Reset] 智能清理: {nav} (Screen: {s})")
                     self.conn.send_command(nav)
                     last_action_time = time.time()
-                continue
             
-            time.sleep(0.3)
+            time.sleep(0.2)
 
         self.last_state = navigator.process_non_combat(self.conn, self.last_state)
         return encode_state(self.last_state), {}
@@ -115,25 +120,22 @@ class SlayTheSpireEnv(gym.Env):
         prev = self.last_state
         prev_turn = prev['game_state']['combat_state']['turn'] if 'combat_state' in prev['game_state'] else 0
 
-        # --- [恢复日志] 打印战斗状态和决策 ---
+        # --- 日志 ---
         try:
             aname = self.mapper.get_action_name(action, prev)
             mask = self.mapper.get_mask(prev)
             valid = [self.mapper.get_action_name(i, prev) for i, m in enumerate(mask) if m]
-            
-            if len(valid) > 6: valid_str = str(valid[:6] + ['...'])
-            else: valid_str = str(valid)
+            valid_str = str(valid[:6] + ['...']) if len(valid) > 6 else str(valid)
             
             combat_st = prev.get('game_state', {}).get('combat_state', {})
             e = combat_st.get('player', {}).get('energy', '?')
             h = len(combat_st.get('hand', []))
             
-            # 恢复这两行日志：
             self.conn.log(f"┌─ [State] E:{e} H:{h} | 可选: {valid_str}")
             self.conn.log(f"└─ [Decision] AI选: {aname}")
         except: pass
 
-        # --- 执行动作 ---
+        # --- 执行 ---
         try:
             cmd = self.mapper.decode_action(action, prev) or "state"
         except:
