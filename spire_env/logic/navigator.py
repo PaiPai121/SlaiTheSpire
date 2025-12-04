@@ -4,12 +4,16 @@ from .combat import ensure_hand_drawn
 
 def process_non_combat(conn, state):
     """
-    [导航核心 V15 - 战斗交互修复版]
-    修复了 '武装'、'幸存者' 等卡牌在 HAND_SELECT 界面卡死的问题。
-    原逻辑只懂得 choose 0，现在加入了对 confirm 的优先响应。
+    [导航核心 V17 - 篝火精灵/Grid 终极修复版]
+    针对 "篝火精灵" 等需要选牌后确认的事件进行了定力增强。
+    1. 引入"耐心选择"机制：不再每回合切换选择目标，而是连续尝试同一张牌 3 次 (idx = counter // 3)。
+       这能防止 AI 在 confirm 按钮出现前就急着换牌，导致选中状态丢失。
+    2. 保持了对 confirm 的最高优先级响应。
     """
     stuck_counter = 0
     combat_wait_counter = 0
+    choose_stuck_counter = 0 
+    
     same_screen_counter = 0
     last_choice_idx = 0
     last_screen_type = None
@@ -39,41 +43,64 @@ def process_non_combat(conn, state):
             last_screen_type = screen
 
         # ==========================================
-        # 2. 战斗检测
+        # 2. 战斗与交互检测 (含 GRID/HAND_SELECT)
         # ==========================================
         is_combat = (screen == 'COMBAT') or \
                     (phase == 'COMBAT') or \
                     ('play' in cmds) or \
                     ('end' in cmds) or \
                     (screen == 'HAND_SELECT') or \
-                    (screen == 'GRID')
+                    (screen == 'GRID') or \
+                    (screen == 'CARD_REWARD') # 有些奖励界面也需要点击
         
         if screen in ['GAME_OVER', 'VICTORY']: 
             return state
         
         if is_combat:
-            # [场景 A] 战斗中的特殊交互 (如：武装、幸存者、挖掘等需要选牌的卡)
+            # --- [Grid/Hand Select 专用逻辑] ---
             
-            # --- [关键修复] 优先检查 confirm ---
-            # 如果不先 confirm，AI 会在 choose 0 那里无限循环
+            # 1. 最高优先级：看见 Confirm 就点，绝不犹豫
             if 'confirm' in cmds:
-                conn.log(f"[Combat] 战斗内确认 -> confirm")
+                conn.log(f"[Combat] 交互确认 -> confirm")
                 conn.send_command("confirm")
-                time.sleep(0.5)
+                choose_stuck_counter = 0 
+                time.sleep(0.8) # 给动画一点时间消失
                 conn.send_command("state")
                 state = get_latest_state(conn)
-                continue
+                continue # 既然点了 confirm，就重新循环，不要往下执行 choose
 
-            # 只有没 confirm 的时候才去选
+            # 2. 选择逻辑 (Choose)
+            # 只有当 'choose' 存在，且不能打牌(play)时，才视为选择界面
             if 'choose' in cmds and 'play' not in cmds and 'end' not in cmds:
-                conn.log(f"[Combat] 战斗内选择 (Screen:{screen}) -> choose 0")
-                conn.send_command("choose 0")
-                time.sleep(0.5)
+                
+                # [关键修复] 降低切换频率
+                # (counter // 3) % 5 意味着：
+                # counter=0,1,2 -> 选第 0 张
+                # counter=3,4,5 -> 选第 1 张
+                # 这样保证了每一张牌都有 3 次机会等待 confirm 出现
+                idx = (choose_stuck_counter // 3) % 5 
+                
+                # 特殊情况：如果是篝火(Rest)的卡牌奖励界面，通常只选第0个就行，不需要轮询
+                if screen == 'CARD_REWARD':
+                    idx = 0
+
+                conn.log(f"[Combat] 交互选择 (Screen:{screen}) -> choose {idx}")
+                conn.send_command(f"choose {idx}")
+                
+                choose_stuck_counter += 1
+                
+                # 等待时间
+                wait_time = 1.0 if screen == 'GRID' else 0.5
+                time.sleep(wait_time)
+                
                 conn.send_command("state")
                 state = get_latest_state(conn)
                 continue
+            
+            # 如果成功脱离了 choose 循环，重置计数
+            choose_stuck_counter = 0
 
-            # [场景 B] 正常战斗
+            # --- [正常战斗逻辑] ---
             if 'play' in cmds or 'end' in cmds:
                 return ensure_hand_drawn(conn, state)
             else:
@@ -86,6 +113,7 @@ def process_non_combat(conn, state):
                 continue
         else:
             combat_wait_counter = 0
+            choose_stuck_counter = 0
 
         # 3. 转场过滤
         if screen == 'NONE':
@@ -130,10 +158,9 @@ def process_non_combat(conn, state):
                     action_cmd = 'return' if 'return' in cmds else 'cancel'
                     decision_reason = "关闭地图"
 
-            # === C. 奖励与选择 (重点修复) ===
+            # === C. 奖励与选择 ===
             elif screen in ['COMBAT_REWARD', 'BOSS_REWARD', 'REST', 'GRID', 'HAND_SELECT', 'CARD_REWARD']:
                 
-                # 只要有 choose，就优先选择，永不放弃 (除非卡死超过非常久)
                 if 'choose' in cmds:
                     if same_screen_counter > 100: 
                          pass 
@@ -142,7 +169,6 @@ def process_non_combat(conn, state):
                         last_choice_idx = 0
                         decision_reason = "拿取奖励/选择 (默认)"
                 
-                # 如果没有东西可拿了，或者被迫放弃，才尝试离开
                 if not action_cmd:
                     for kw in ['proceed', 'skip', 'leave', 'start', 'next', 'cancel']:
                         if kw in cmds: 
