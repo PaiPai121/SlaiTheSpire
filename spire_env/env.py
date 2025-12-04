@@ -21,9 +21,10 @@ class SlayTheSpireEnv(gym.Env):
 
     def reset(self, seed=None, options=None):
         """
-        [Reset V4 - 智能决策版] 
-        不再瞎猜。根据 available_commands 准确判断该点什么。
-        核心逻辑：在结算界面，优先处理弹窗 (cancel/confirm)，其次才是继续 (proceed)。
+        [Reset V7 - 慢速稳健版] 
+        修复了 "点击太快导致卡死" 的问题。
+        1. 结算界面等待时间延长至 1.5s (等待动画)。
+        2. 引入 stuck_counter，如果 proceed 点了没反应，自动切换尝试 return。
         """
         super().reset(seed=seed)
         self.steps_since_reset = 0
@@ -31,6 +32,7 @@ class SlayTheSpireEnv(gym.Env):
         
         start_time = time.time()
         last_action_time = 0
+        stuck_counter = 0 # 重新引入卡顿计数器
         
         while True:
             # 1. 超时保护
@@ -52,7 +54,6 @@ class SlayTheSpireEnv(gym.Env):
             cmds = state.get('available_commands', [])
             
             # 3. 退出条件 (成功进入可玩状态)
-            # 包括: 地图、战斗、商店、休息处，或者事件界面(且有选项)
             is_ready = False
             if s in ['MAP', 'COMBAT', 'SHOP', 'REST']: is_ready = True
             if s == 'EVENT' and any(c in cmds for c in ['choose','proceed','leave']): is_ready = True
@@ -72,33 +73,50 @@ class SlayTheSpireEnv(gym.Env):
                 continue
 
             # ==================================================
-            # 5. 确定性清理逻辑 (Smart Cleanup)
+            # 5. 清理逻辑 (慢速版)
             # ==================================================
             
-            # 冷却时间：结算界面给 1.5s 动画时间，其他界面 0.5s
+            # [关键修改] 将结算界面的等待时间大幅延长到 1.5s
+            # 只有等动画播完了，点击才有效。
             wait_t = 1.5 if s in ['GAME_OVER', 'VICTORY'] else 0.5
             
             if time.time() - last_action_time > wait_t:
                 nav = None
                 
-                # --- [逻辑核心] 结算界面优先级 ---
+                # --- A. 结算界面逻辑 ---
                 if s in ['GAME_OVER', 'VICTORY']:
-                    # 1. 最高优先级：关闭解锁弹窗/确认信息
-                    # 注意：'return' 在结算界面通常等同于 ESC/Skip，很有用
-                    if 'confirm' in cmds: nav = 'confirm'
-                    elif 'cancel' in cmds: nav = 'cancel'
-                    elif 'return' in cmds: nav = 'return'
+                    stuck_counter += 1 # 每次尝试操作都计数
                     
-                    # 2. 次级优先级：继续流程
-                    elif 'proceed' in cmds: nav = 'proceed'
+                    # 1. 最高优先级：确认弹窗 (解锁信息)
+                    if 'confirm' in cmds:
+                        nav = 'confirm'
+                        stuck_counter = 0 # 成功点到确认，重置计数
                     
-                    # 3. 保底：点击或离开
-                    elif 'leave' in cmds: nav = 'leave'
-                    elif 'skip' in cmds: nav = 'skip'
-                    
-                # --- 普通界面优先级 ---
+                    # 2. 尝试继续 (Proceed)
+                    elif 'proceed' in cmds:
+                        # 策略：前 5 次尝试点 proceed，如果还没退出去，说明卡住了
+                        if stuck_counter <= 5:
+                            nav = 'proceed'
+                        else:
+                            # 既然 proceed 没用，尝试用 ESC (return) 强退
+                            nav = 'return'
+                            if stuck_counter > 8:
+                                stuck_counter = 0 # 重置循环，再试 proceed
+
+                    # 3. 如果没有 proceed，尝试其他
+                    elif 'return' in cmds:
+                        nav = 'return'
+                    elif 'leave' in cmds: 
+                        nav = 'leave'
+                    elif 'skip' in cmds:
+                        nav = 'skip'
+                        
+                    if nav:
+                        self.conn.log(f"[Reset] 结算处理: {nav} (第{stuck_counter}次尝试)")
+                
+                # --- B. 普通界面逻辑 ---
                 else:
-                    # 标准顺序：确认 > 继续 > 返回 > 离开
+                    stuck_counter = 0 # 离开了结算界面，重置计数
                     prio = ['confirm', 'proceed', 'return', 'cancel', 'leave', 'click', 'skip']
                     for c in prio: 
                         if c in cmds: 
@@ -106,11 +124,12 @@ class SlayTheSpireEnv(gym.Env):
                 
                 # 执行
                 if nav:
-                    self.conn.log(f"[Reset] 智能清理: {nav} (Screen: {s})")
+                    if s not in ['GAME_OVER', 'VICTORY']: # 减少刷屏，只有非结算才详细打 log
+                        self.conn.log(f"[Reset] 清理: {nav}")
                     self.conn.send_command(nav)
                     last_action_time = time.time()
             
-            time.sleep(0.2)
+            time.sleep(0.1)
 
         self.last_state = navigator.process_non_combat(self.conn, self.last_state)
         return encode_state(self.last_state), {}

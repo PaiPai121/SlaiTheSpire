@@ -4,10 +4,9 @@ from .combat import ensure_hand_drawn
 
 def process_non_combat(conn, state):
     """
-    [导航核心 V14 - 贪婪修复版]
-    移除了奖励界面的超时放弃逻辑。
-    在 COMBAT_REWARD/BOSS_REWARD 界面，只要有 'choose' 就坚持拿取，
-    防止因停留时间过长而误触 proceed 跳过奖励。
+    [导航核心 V15 - 战斗交互修复版]
+    修复了 '武装'、'幸存者' 等卡牌在 HAND_SELECT 界面卡死的问题。
+    原逻辑只懂得 choose 0，现在加入了对 confirm 的优先响应。
     """
     stuck_counter = 0
     combat_wait_counter = 0
@@ -53,7 +52,19 @@ def process_non_combat(conn, state):
             return state
         
         if is_combat:
-            # [场景 A] 战斗中的特殊交互
+            # [场景 A] 战斗中的特殊交互 (如：武装、幸存者、挖掘等需要选牌的卡)
+            
+            # --- [关键修复] 优先检查 confirm ---
+            # 如果不先 confirm，AI 会在 choose 0 那里无限循环
+            if 'confirm' in cmds:
+                conn.log(f"[Combat] 战斗内确认 -> confirm")
+                conn.send_command("confirm")
+                time.sleep(0.5)
+                conn.send_command("state")
+                state = get_latest_state(conn)
+                continue
+
+            # 只有没 confirm 的时候才去选
             if 'choose' in cmds and 'play' not in cmds and 'end' not in cmds:
                 conn.log(f"[Combat] 战斗内选择 (Screen:{screen}) -> choose 0")
                 conn.send_command("choose 0")
@@ -123,16 +134,10 @@ def process_non_combat(conn, state):
             elif screen in ['COMBAT_REWARD', 'BOSS_REWARD', 'REST', 'GRID', 'HAND_SELECT', 'CARD_REWARD']:
                 
                 # 只要有 choose，就优先选择，永不放弃 (除非卡死超过非常久)
-                # 之前的 same_screen_counter > 8 在这里被移除了
                 if 'choose' in cmds:
-                    # 为了防止真的死循环（比如选了没反应），设置一个超大的阈值
                     if same_screen_counter > 100: 
-                         # 极度无奈时才尝试 proceed
                          pass 
                     else:
-                        # 正常贪婪逻辑：拿!
-                        # 对于奖励界面，我们通常想拿所有东西，所以一直 choose 0 就可以
-                        # 因为拿了一个，它就会从列表消失，下一个变成 0
                         action_cmd = "choose 0"
                         last_choice_idx = 0
                         decision_reason = "拿取奖励/选择 (默认)"
