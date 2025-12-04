@@ -45,13 +45,12 @@ def process_non_combat(conn, state):
         # ==========================================
         # 2. 战斗与交互检测 (含 GRID/HAND_SELECT)
         # ==========================================
+        is_combat_interaction = (phase == 'COMBAT') and (screen in ['HAND_SELECT', 'GRID'])
         is_combat = (screen == 'COMBAT') or \
-                    (phase == 'COMBAT') or \
                     ('play' in cmds) or \
                     ('end' in cmds) or \
-                    (screen == 'HAND_SELECT') or \
-                    (screen == 'GRID') or \
-                    (screen == 'CARD_REWARD') # 有些奖励界面也需要点击
+                    is_combat_interaction
+                    # (screen == 'CARD_REWARD') # 有些奖励界面也需要点击
         
         if screen in ['GAME_OVER', 'VICTORY']: 
             return state
@@ -72,7 +71,9 @@ def process_non_combat(conn, state):
             # 2. 选择逻辑 (Choose)
             # 只有当 'choose' 存在，且不能打牌(play)时，才视为选择界面
             if 'choose' in cmds and 'play' not in cmds and 'end' not in cmds:
-                
+                if screen in ['HAND_SELECT', 'GRID']:
+                    # 停止自动导航，将状态返回给 Agent，让神经网络决定选哪张牌
+                    return state
                 # [关键修复] 降低切换频率
                 # (counter // 3) % 5 意味着：
                 # counter=0,1,2 -> 选第 0 张
@@ -223,8 +224,15 @@ def process_non_combat(conn, state):
                     
                     if ns == 'NONE' or ns == 'COMBAT' or np == 'COMBAT':
                         state = next_s; transitioned = True; break
+                    # [关键修改] 获取选项列表的内容摘要
+                    prev_choices = game.get('choice_list', [])
+                    next_choices = ng.get('choice_list', [])
                     
-                    if ns != prev_screen or nc != prev_cmds:
+                    # 新逻辑：增加对选项列表变化的检测
+                    # 如果选项的数量变了，或者内容变了，也视为状态切换成功
+                    choices_changed = (len(prev_choices) != len(next_choices)) or (prev_choices != next_choices)
+
+                    if ns != prev_screen or nc != prev_cmds or choices_changed:
                         state = next_s; transitioned = True; same_screen_counter = 0; break
                 
                 time.sleep(0.05)

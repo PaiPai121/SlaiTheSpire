@@ -162,6 +162,10 @@ class SlayTheSpireEnv(gym.Env):
 
         self.conn.send_command(cmd)
         
+        if "potion" in cmd:
+            time.sleep(0.6) # 药水动画通常较长，给 1.2 秒缓冲
+            self.conn.send_command("state") # 刷新一下状态
+            game_io.get_latest_state(self.conn) # 清空一下缓冲
         # --- 诊断与等待 ---
         if "play" in cmd: 
             card_cost = 0
