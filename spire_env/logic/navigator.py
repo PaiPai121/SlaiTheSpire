@@ -4,12 +4,9 @@ from .combat import ensure_hand_drawn
 
 def process_non_combat(conn, state):
     """
-    [导航核心 V11 - 篝火修复版]
-    1. SHOP: 禁买，强制离开。
-    2. MAP: 锁定选路，长等待。
-    3. REST: 优先行动(休息/锻造)，长等待(适配动画)。
-    4. REWARD: 贪婪拿取。
-    5. EVENT: 优先逃跑。
+    [导航核心 V12 - 详细日志版]
+    保持了之前的修复逻辑（Map锁定/商店禁买/Neow修复），
+    并增加了详细的格式化日志，让过图决策清晰可见。
     """
     stuck_counter = 0
     combat_wait_counter = 0
@@ -18,7 +15,7 @@ def process_non_combat(conn, state):
     last_screen_type = None
     
     while True:
-        # 1. 刷新
+        # 1. 刷新状态
         if not state or 'game_state' not in state:
             time.sleep(0.05); conn.send_command("state")
             state = get_latest_state(conn, retry_limit=1)
@@ -62,98 +59,104 @@ def process_non_combat(conn, state):
         # 4. 决策逻辑
         # ==========================================
         action_cmd = None
+        decision_reason = "" # 用于日志显示的决策理由
 
-        # [T0] 确认 (最高级)
-        if 'confirm' in cmds: action_cmd = 'confirm'
+        # [T0] 确认
+        if 'confirm' in cmds: 
+            action_cmd = 'confirm'
+            decision_reason = "确认/继续"
 
         if not action_cmd:
             
-            # === A. 商店 (SHOP) - 禁买 ===
+            # === A. 商店 (SHOP) ===
             if screen == 'SHOP':
                 for kw in ['leave', 'return', 'cancel', 'proceed']:
-                    if kw in cmds: action_cmd = kw; break
+                    if kw in cmds: 
+                        action_cmd = kw
+                        decision_reason = "离开商店 (禁买)"
+                        break
 
-            # === B. 地图 (MAP) - 锁定选路 ===
+            # === B. 地图 (MAP) ===
             elif screen == 'MAP':
                 if 'choose' in cmds:
                     if same_screen_counter > 5:
                         idx = (last_choice_idx + 1) % 3 
                         action_cmd = f"choose {idx}"
                         last_choice_idx = idx
+                        decision_reason = f"切换路径 (防卡死 {idx})"
                     else:
                         action_cmd = "choose 0"
                         last_choice_idx = 0
+                        decision_reason = "选择路径 (默认)"
+                
                 elif 'return' in cmds or 'cancel' in cmds:
                     action_cmd = 'return' if 'return' in cmds else 'cancel'
+                    decision_reason = "关闭地图/返回"
 
-            # === C. 篝火 (REST) - 动画适配 ===
-            # 篝火需要特殊处理，因为睡觉动画很长
-            elif screen == 'REST':
-                # 1. 优先行动 (休息/锻造)
+            # === C. 贪婪组 (奖励) ===
+            elif screen in ['COMBAT_REWARD', 'BOSS_REWARD', 'REST', 'GRID', 'HAND_SELECT', 'CARD_REWARD']:
                 if 'choose' in cmds:
-                    # 如果卡住了(比如不能睡觉?)，尝试第二个选项(锻造)
-                    if same_screen_counter > 5:
-                        action_cmd = "choose 1"
-                    else:
-                        # 默认选第0个 (通常是睡觉)
-                        action_cmd = "choose 0"
-                
-                # 2. 行动完后离开
-                if not action_cmd:
-                    for kw in ['proceed', 'leave', 'start', 'next']:
-                        if kw in cmds: action_cmd = kw; break
-
-            # === D. 贪婪组 (奖励) ===
-            elif screen in ['COMBAT_REWARD', 'BOSS_REWARD', 'GRID', 'HAND_SELECT', 'CARD_REWARD']:
-                if 'choose' in cmds:
-                    if same_screen_counter > 8: # 防死锁熔断
-                        pass 
+                    if same_screen_counter > 8:
+                        pass # 放弃
                     else:
                         if same_screen_counter > 4:
                             idx = (last_choice_idx + 1) % 5 
                             action_cmd = f"choose {idx}"
                             last_choice_idx = idx
+                            decision_reason = f"拿取奖励/选择 ({idx})"
                         else:
                             action_cmd = "choose 0"
                             last_choice_idx = 0
+                            decision_reason = "拿取奖励/选择 (默认)"
                 
                 if not action_cmd:
                     for kw in ['proceed', 'skip', 'leave', 'start', 'next', 'cancel']:
-                        if kw in cmds: action_cmd = kw; break
+                        if kw in cmds: 
+                            action_cmd = kw
+                            decision_reason = "离开奖励界面"
+                            break
 
-            # === E. 路过组 (事件/其他) ===
+            # === D. 路过组 (事件) ===
             else:
                 for kw in ['leave', 'return', 'cancel', 'proceed', 'skip', 'start', 'next']:
-                    if kw in cmds: action_cmd = kw; break
+                    if kw in cmds: 
+                        action_cmd = kw
+                        decision_reason = "离开/前进"
+                        break
                 
                 if not action_cmd and 'choose' in cmds:
-                    if same_screen_counter > 5:
-                        idx = (last_choice_idx + 1) % 5 
-                        action_cmd = f"choose {idx}"; last_choice_idx = idx
+                    if screen == 'SHOP': pass 
                     else:
-                        action_cmd = "choose 0"; last_choice_idx = 0
-                
+                        action_cmd = "choose 0"
+                        decision_reason = "事件选择"
+
                 if not action_cmd and 'click' in cmds:
                     action_cmd = 'click'
+                    decision_reason = "点击对话"
 
-        # 5. 执行与锁定
+        # 5. 执行与日志
         if action_cmd:
-            # conn.log(f"[Auto] {action_cmd}") 
+            # --- [新增] 详细日志 ---
+            # 缩略显示 cmds 防止太长
+            cmds_str = str(cmds) if len(cmds) < 5 else str(cmds[:5] + ['...'])
+            conn.log(f"┌─ [Nav State] Screen: {screen} | Cmds: {cmds_str}")
+            conn.log(f"└─ [Auto] 执行: {action_cmd} ({decision_reason})")
+            
             prev_screen = screen
             prev_cmds = cmds
+            
             conn.send_command(action_cmd)
             stuck_counter = 0
             
-            # [动态超时] 根据界面类型调整等待时间
-            if screen == 'MAP': t_out = 8.0
-            elif screen == 'REST': t_out = 5.0 # 篝火动画长，给5秒
-            else: t_out = 2.0
-            
+            # 锁定等待
             wait_start = time.time()
+            t_out = 8.0 if screen == 'MAP' else 2.0 
+            
             transitioned = False
             while time.time() - wait_start < t_out:
                 conn.send_command("state")
                 next_s = get_latest_state(conn, retry_limit=1)
+                
                 if next_s:
                     ng = next_s.get('game_state', {})
                     ns = ng.get('screen_type')
@@ -162,14 +165,17 @@ def process_non_combat(conn, state):
                     
                     # 退出条件
                     if ns == 'NONE': 
+                        # conn.log(f"   [Nav] 转场中 (NONE)...")
                         state = next_s; transitioned = True; break
                     if ns == 'COMBAT' or np == 'COMBAT':
+                        # conn.log(f"   [Nav] 进入战斗!")
                         state = next_s; transitioned = True; break
                     if ns != prev_screen or nc != prev_cmds:
                         state = next_s; transitioned = True; same_screen_counter = 0; break
                 time.sleep(0.05)
             
             if not transitioned:
+                # conn.log(f"   [Nav] ⚠️ 动作未生效或加载中...")
                 state = get_latest_state(conn)
                 same_screen_counter += 1
         else:
