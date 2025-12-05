@@ -54,7 +54,7 @@ class SlayTheSpireEnv(gym.Env):
             state = game_io.get_latest_state(self.conn, retry_limit=2)
             
             if not state: 
-                time.sleep(0.5); continue
+                time.sleep(0.1); continue
 
             g = state.get('game_state') or {}
             s = g.get('screen_type')
@@ -102,7 +102,7 @@ class SlayTheSpireEnv(gym.Env):
                     # 2. 尝试继续 (Proceed)
                     elif 'proceed' in cmds:
                         # 策略：前 5 次尝试点 proceed，如果还没退出去，说明卡住了
-                        if stuck_counter <= 5:
+                        if stuck_counter <= 3:
                             nav = 'proceed'
                         else:
                             # 既然 proceed 没用，尝试用 ESC (return) 强退

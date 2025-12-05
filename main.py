@@ -15,7 +15,12 @@ class SmartCheckpointCallback(CheckpointCallback):
     def _on_step(self) -> bool:
         # 调用父类的保存逻辑
         super()._on_step()
-        
+        # [新增] 实时步数监控
+            # 这里的 n_steps 是你在 model 初始化时设置的 buffer 大小 (比如 2048)
+            # 打印格式： "Step: 1520 / 2048"
+            # 当左边的数达到右边的数时，就会触发一次 Update 和 TensorBoard 写入
+        if self.num_timesteps % 20 == 0:
+                    self.connection.log(f">>> Global Step: {self.num_timesteps}")
         # 如果这一步触发了保存 (n_calls 是当前步数)
         if self.n_calls % self.save_freq == 0:
             # 拼接文件名 (参考 SB3 的命名规则)
@@ -25,7 +30,7 @@ class SmartCheckpointCallback(CheckpointCallback):
             # 1. 写进 ai_debug_log.txt (给你看)
             self.connection.log(msg)
             # 2. 打印到控制台 (给上帝看)
-            print(msg)
+            # print(msg)
             
         return True
 
@@ -79,7 +84,7 @@ def main():
                                     # 加大熵系数能逼它多尝试其他目标。
             
             batch_size=256,         # 稍微加大 Batch
-            n_steps=2048,           # 每次收集更多步数再更新
+            n_steps=512,           # 每次收集更多步数再更新
             policy_kwargs=dict(
                 net_arch=[512, 512] # 网络加宽。输入有1200维，256的层有点窄了，建议 512x512
             )

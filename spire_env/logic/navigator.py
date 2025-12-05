@@ -162,7 +162,51 @@ def process_non_combat(conn, state):
                         action_cmd = kw
                         decision_reason = "离开商店 (禁买)"
                         break
-
+            # === [新增] 篝火 (REST) ===
+            elif screen == 'REST':
+                # 如果还没做选择 (有 choose 指令)
+                if 'choose' in cmds:
+                    # 1. 获取玩家血量信息
+                    player = game.get('combat_state', {}).get('player') or \
+                             game.get('player', {}) # 兼容不同层级
+                    
+                    current_hp = player.get('current_hp', 0)
+                    max_hp = player.get('max_hp', 80)
+                    hp_ratio = current_hp / max(1, max_hp)
+                    
+                    # 2. 分析选项
+                    choice_list = game.get('choice_list', [])
+                    # 典型的 choice_list 长这样: ['rest', 'smith', 'toke'...]
+                    
+                    # 默认行为：找 "rest" (索引通常是 0)
+                    target_action = "rest"
+                    
+                    # 3. 决策逻辑
+                    # 如果血量健康 (>50%)，且可以锻造，就优先锻造
+                    if hp_ratio > 0.5:
+                        if 'smith' in choice_list:
+                            target_action = "smith"
+                        elif 'dig' in choice_list: # 如果有铲子
+                            target_action = "dig"
+                        elif 'lift' in choice_list: # 如果有吉拉亚
+                            target_action = "lift"
+                            
+                    # 4. 执行选择
+                    # 找到目标动作在列表里的索引
+                    try:
+                        idx = choice_list.index(target_action)
+                        action_cmd = f"choose {idx}"
+                        decision_reason = f"篝火决策: {target_action} (HP: {int(hp_ratio*100)}%)"
+                    except ValueError:
+                        # 如果想做的做不了（比如满血不能rest，或者没牌升级不能smith）
+                        # 就选第一个能用的
+                        action_cmd = "choose 0"
+                        decision_reason = "篝火默认选择"
+                
+                # 如果已经选完了 (有 proceed)
+                elif 'proceed' in cmds:
+                    action_cmd = 'proceed'
+                    decision_reason = "离开篝火"
             # === B. 地图 (MAP) ===
             elif screen == 'MAP':
                 if 'choose' in cmds:
@@ -179,6 +223,26 @@ def process_non_combat(conn, state):
                 elif 'return' in cmds or 'cancel' in cmds:
                     action_cmd = 'return' if 'return' in cmds else 'cancel'
                     decision_reason = "关闭地图"
+            # === [新增] 宝箱 (CHEST) ===
+            elif screen == 'CHEST':
+                # 1. 还没开箱子，先开
+                if 'open' in cmds:
+                    action_cmd = 'open'
+                    decision_reason = "开启宝箱"
+                
+                # 2. 箱子开了，里面有东西 (遗物/金币/钥匙)
+                # Communication Mod 通常会把箱子里的东西变成 'choose' 选项
+                elif 'choose' in cmds:
+                    # 这里不需要太复杂，无脑拿第一个就行
+                    # 因为拿完一个，状态会刷新，下次循环拿第二个
+                    # 除非你有 "诅咒钥匙(Cursed Key)" 遗物不想拿，但现阶段建议全拿
+                    action_cmd = "choose 0" 
+                    decision_reason = "拿取宝箱奖励"
+                    
+                # 3. 拿空了，继续
+                elif 'proceed' in cmds:
+                    action_cmd = 'proceed'
+                    decision_reason = "离开宝箱房间"
             # === [新增/修改] C1. 战斗奖励专用逻辑 (修复药水卡死) ===
             elif screen == 'COMBAT_REWARD':
                 # 1. 检查药水是否满了
