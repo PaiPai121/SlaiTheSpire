@@ -55,10 +55,16 @@ def get_card_index(card_id):
 # 遇到没见过的怪会被归类为 UNKNOWN，不影响程序运行。
 MONSTER_IDS = [
     # --- Act 1 ---
-    "Cultist", "JawWorm", "FungiBeast", "RedLouse", "GreenLouse", "AcidSlime_L", "SpikeSlime_L",
+    "Cultist", "JawWorm", "FungiBeast", "FuzzyLouseNormal", "FuzzyLouseDefensive", "AcidSlime_L", "SpikeSlime_L",
     "AcidSlime_M", "SpikeSlime_M", "AcidSlime_S", "SpikeSlime_S", "Looter", "BlueSlaver",
     "GremlinNob", "Sentry", "Lagavulin", "TheGuardian", "Hexaghost", "SlimeBoss",
-    
+    # [新增] 地精家族 (把这一组补进去)
+    "GremlinNob",       # 精英 (已有)
+    "GremlinFat",       # 胖地精 (虚弱)
+    "GremlinTsundere",  # 愤怒地精 (Mad Gremlin) - ID叫傲娇确实挺搞笑的
+    "GremlinWarrior",   # 护盾地精 (Shield Gremlin)
+    "GremlinThief",     # 偷窃地精 (Sneaky Gremlin) - 为了防止以后报错，一起加上
+    "GremlinWizard",    # 巫师地精 (Wizard Gremlin) - 为了防止以后报错，一起加上
     # --- Act 2 ---
     "SphericGuardian", "Chosen", "ShellParasite", "Byrd", "Centurion", "Mystic",
     "Snecko", "SnakePlant", "Mugger", "Shelled Parasite", "Taskmaster",
