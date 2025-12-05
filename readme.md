@@ -93,7 +93,6 @@ tensorboard --logdir logs/sb3
 * **受伤惩罚**: 自身掉血 (-)。
 
 ## 📝 TODO / 未来计划
-* [ ] 战斗中药水使用有bug，打不出去
 * [ ] 完善商店购买逻辑（目前是强制跳过）。
 * [ ] 增加更复杂的事件决策逻辑（目前多为随机或固定）。
 * [ ] 接入 LSTM/Transformer 以处理长短期记忆。
@@ -102,3 +101,17 @@ tensorboard --logdir logs/sb3
 ---
 
 **License**: MIT
+
+
+## 🔄 更新日志 (Changelog)
+
+### v2.0 - Perception Refactor 
+
+#### 🧠 模型架构变更 (AI Model Architecture)
+* **状态编码重构 (State Encoder Overhaul)**:
+    * **From Hash to One-Hot**: 以前使用随机哈希值代表卡牌（如 `Strike = 0.123`），导致神经网络难以收敛。现在构建了固定词表，使用 **One-Hot Encoding** 独立维度表示每张卡牌。
+    * *Effect*: AI 现在能像人类一样准确区分“打击”和“防御”，而不是处理模糊的浮点数。
+* **特征工程优化 (Feature Engineering)**:
+    * **Gold (金币)**: 线性归一化 $\rightarrow$ **对数缩放 (`log10`)**。提高了模型对低金币数量变动的敏感度。
+    * **Energy (能量)**: 标量数值 $\rightarrow$ **One-Hot 向量**。帮助模型理解能量的非线性阈值（如 3费和 4费的质变）。
+    * **HP (血量)**: 新增 **"濒死状态" (Critical Health)** 布尔特征（HP < 15%），强化生存本能。
