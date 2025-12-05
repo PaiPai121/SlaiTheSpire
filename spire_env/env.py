@@ -168,31 +168,29 @@ class SlayTheSpireEnv(gym.Env):
         # ======================================================================
         if "potion" in cmd:
             try:
+                # cmd 格式现在是: "potion use {slot} {target}"
                 parts = cmd.split()
-                if len(parts) >= 2:
-                    p_idx = int(parts[1])
-                    
-                    # 计算安全目标
-                    safe_target = 0
-                    try:
-                        monsters = prev.get('game_state', {}).get('combat_state', {}).get('monsters', [])
-                        for m_idx, m in enumerate(monsters):
-                            if not m.get('is_gone') and not m.get('is_dying'):
-                                safe_target = m_idx
-                                break
-                    except: pass
-                    
-                    # 构造 potion use 指令
-                    final_cmd = f"potion use {p_idx} {safe_target}"
-                    
-                    self.conn.log(f"[Action] 发送药水指令: {final_cmd}")
-                    self.conn.send_command(final_cmd)
-                    
-                    # 进入专用等待
-                    combat.wait_for_potion_used(self.conn, prev, p_idx, final_cmd)
+                p_idx = 0
+                
+                # [核心修复] 智能解析 index
+                if "use" in parts:
+                    # 找到 'use' 后面的那个数字
+                    use_idx = parts.index("use")
+                    if len(parts) > use_idx + 1:
+                        p_idx = int(parts[use_idx + 1])
                 else:
-                    self.conn.send_command(cmd)
-                    time.sleep(0.5)
+                    # 兼容旧格式 "potion {slot}"
+                    if len(parts) >= 2:
+                        p_idx = int(parts[1])
+
+                self.conn.log(f"[Action] 投掷药水: {cmd}")
+                
+                # [核心修复] 直接发送 mapper 生成的完整指令
+                # 不再画蛇添足去计算 safe_target，因为 AI 已经选好了目标
+                self.conn.send_command(cmd)
+                
+                # 进入专用等待
+                combat.wait_for_potion_used(self.conn, prev, p_idx, cmd)
             except Exception as e:
                 self.conn.log(f"[Error] 药水指令异常: {e}")
                 time.sleep(0.5)

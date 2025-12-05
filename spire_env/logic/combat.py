@@ -123,6 +123,7 @@ def wait_for_potion_used(conn, prev_state, potion_index, original_cmd_str):
     last_send_t = start_t
     retry_count = 0
     time.sleep(0.01)
+    last_req_time = 0
     while time.time() - start_t < 4.0:
         time.sleep(0.1) # 稍微快一点的检测
         

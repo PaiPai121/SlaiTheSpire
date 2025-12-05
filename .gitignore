@@ -3,3 +3,4 @@ models
 logs
 crash_log.txt
 spire_env/__pycache__/
+*.pyc

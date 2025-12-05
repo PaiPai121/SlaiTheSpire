@@ -103,6 +103,34 @@ tensorboard --logdir logs/sb3
 **License**: MIT
 
 
+## 🧠 Core Architecture: The "Brain" Upgrade
+
+This project has evolved from a naive bot to a strategic agent through three fundamental architectural shifts: **Perception, Precision, and Values**.
+
+### 1. Perception: From Hash to One-Hot (State Encoder)
+* **The Problem**: Previously, cards were encoded using `zlib.crc32` hashing. To the Neural Network, "Strike" (Hash: 0.12) and "Perfected Strike" (Hash: -0.98) looked like completely unrelated random numbers. The AI was effectively "face-blind" to card identities.
+* **The Solution**: We implemented a **One-Hot Encoding** system with a fixed vocabulary.
+    * Each card now has a dedicated input dimension (neuron).
+    * **Energy** is encoded as a One-Hot vector (0-5+) rather than a scalar, allowing the network to learn non-linear thresholds (e.g., "I can play this heavy card ONLY when energy is at state 4").
+    * **Gold** is scaled using `Log10` to make the AI sensitive to early-game economy differences (50 vs 150 gold) while ignoring late-game inflation.
+
+### 2. Decision: Action Space Flattening (Action Mapper)
+* **The Problem**: The original action space was `Discrete(14)` (Card 1-10, Potion 1-3). The AI could decide *which* card to play, but not *who* to target. It defaulted to attacking the first monster, making it impossible to prioritize high-threat enemies (e.g., killing the Snecko first).
+* **The Solution**: We flattened the action space to `Discrete(67)`.
+    * **Formula**: `ActionID = (CardIndex * 5_Targets) + TargetIndex`.
+    * This gives the AI a "sniper scope," allowing it to output specific commands like "Play Bash on Monster #2."
+    * A smart `ActionMapper` dynamically masks invalid targets (dead monsters) to prune the search space.
+
+### 3. Values: The "Fear Factor" (Reward Shaping)
+* **The Problem**: A standard linear reward function treats all HP loss equally. Losing 5 HP when at 80/80 health is a minor inconvenience; losing 5 HP at 6/80 health is fatal. A linear agent often dies because it greedily trades health for damage.
+* **The Solution**: We introduced a **Non-Linear Survival Penalty**.
+    * **The Formula**: 
+      $$R_{loss} = \text{BaseLoss} \times (1 + 2 \times (1 - \text{HPRatio})^2)$$
+    * **Behavior**:
+        * At **100% HP**: The penalty multiplier is ~1.0x. (Aggressive)
+        * At **10% HP**: The penalty multiplier spikes to ~2.6x. (Defensive)
+    * **Resource Management**: Using a potion now incurs a small negative reward (-3.0). This teaches the AI a concept of "Cost," encouraging it to save potions for Elite/Boss fights rather than wasting them on weak minions.
+
 ## 🔄 更新日志 (Changelog)
 ### v1.0.4 - Action Space Upgrade 
 * **Targeted Capability**: The agent is no longer limited to attacking the first monster. It can now choose specific targets for cards and potions.
