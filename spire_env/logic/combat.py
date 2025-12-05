@@ -11,6 +11,7 @@ def wait_for_card_played(conn, prev_state, card_cost=None):
         base_e = p_c['player']['energy']
         base_h = len(p_c.get('hand', []))
         base_ids = sorted([c.get('id','') for c in p_c.get('hand', [])])
+        base_screen = prev_state.get('game_state', {}).get('screen_type')
     except:
         conn.log("[Wait] ❌ 获取基准值失败，默认等待0.5s")
         time.sleep(0.5)
@@ -20,14 +21,17 @@ def wait_for_card_played(conn, prev_state, card_cost=None):
     time.sleep(0.1) 
     
     start_t = time.time()
-    
+    last_req_time = 0
     # 保持 4.0 秒超时作为兜底
     while time.time() - start_t < 4.0:
         # 主动请求刷新 (虽然通常不需要，因为游戏会自动发，但为了保险)
-        conn.send_command("state")
+        # conn.send_command("state")
+        if time.time() - last_req_time > 0.5:
+            conn.send_command("state")
+            last_req_time = time.time()
         
         # [优化] 减少 retry_limit，改为高频单次读取
-        state = get_latest_state(conn, retry_limit=2)
+        state = get_latest_state(conn, retry_limit=1)
         
         # 如果读取不到任何数据（缓冲区空了），才稍微睡一下避免 CPU 100%
         if not state:
@@ -42,6 +46,10 @@ def wait_for_card_played(conn, prev_state, card_cost=None):
             end_screens = ['VICTORY', 'GAME_OVER', 'COMBAT_REWARD', 'MAP', 'SHOP', 'REST']
             if screen in end_screens:
                 return 
+            
+            if screen not in ['COMBAT', 'NONE'] and screen != base_screen:
+                conn.log(f"[Wait] 屏幕切换 {base_screen}->{screen}，判定成功")
+                return
             
             c_c = g.get('combat_state')
             if not c_c: 
@@ -112,12 +120,19 @@ def wait_for_potion_used(conn, prev_state, potion_index, original_cmd_str):
     start_t = time.time()
     last_send_t = start_t
     retry_count = 0
-    
+    time.sleep(0.01)
     while time.time() - start_t < 4.0:
         time.sleep(0.1) # 稍微快一点的检测
         
-        conn.send_command("state")
+        # conn.send_command("state")
+        # 流量控制：每 0.5s 发一次 state，防止刷屏
+        if time.time() - last_req_time > 0.5:
+            conn.send_command("state")
+            last_req_time = time.time()
+
         state = get_latest_state(conn, retry_limit=1)
+        if not state:
+            time.sleep(0.02); continue
         
         if state:
             g = state.get('game_state', {})
@@ -138,9 +153,32 @@ def wait_for_potion_used(conn, prev_state, potion_index, original_cmd_str):
                     curr_name = c_potions[potion_index].get('name', 'N/A')
                     # 名字变了（变空或变其他），说明成功
                     if curr_name != target_potion_name:
+                        # ==========================================================
+                        # 【插入点】在此处处理特殊药水的硬直
+                        # ==========================================================
+                        is_chaos = "Chaos" in target_potion_name or "混沌" in target_potion_name
+                        is_brew = "Entropic" in target_potion_name or "乱酿" in target_potion_name
+                        
+                        if is_chaos:
+                            conn.log(f"[Wait] 检测到【精炼混沌】，强制等待特效结算 (3.5s)...")
+                            # 强制睡眠，不发任何指令，让游戏把 3 张牌打完
+                            time.sleep(3.5)
+                            # 这里不需要 return，循环结束自然会退出，
+                            # 或者你可以加上 return 明确退出
+                            return
+
+                        elif is_brew:
+                            conn.log(f"[Wait] 检测到【乱酿】，等待药水栏填充 (1.5s)...")
+                            time.sleep(1.5)
+                            return
+                        
+                        # 普通药水，直接返回
+
                         if retry_count > 0:
                             conn.log(f"[Wait] ✅ 药水在第 {retry_count} 次重试后生效")
                         return
+                    if time.time() - last_send_t < 1.5:
+                        continue
             except: 
                 # 如果读取报错（比如数据结构变了），不要立即认为失败，继续下一轮
                 pass

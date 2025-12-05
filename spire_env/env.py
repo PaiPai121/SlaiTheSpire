@@ -238,7 +238,7 @@ class SlayTheSpireEnv(gym.Env):
             else:
                 time.sleep(0.1)
                 
-            self.conn.send_command("state")
+            # self.conn.send_command("state")
 
         # --- 获取新状态 ---
         self.conn.send_command("state")
@@ -249,7 +249,11 @@ class SlayTheSpireEnv(gym.Env):
 
         final = navigator.process_non_combat(self.conn, curr)
         rew = reward.calculate_reward(prev, final)
-        
+
+        if abs(rew) > 0.01:
+            # 打印到控制台，给自己看 (不要用 self.conn.log)
+            self.conn.log(f"   >>> Reward: {rew:.2f} (HP变动/伤害/击杀)")
+
         self.last_state = final
         done = False
         
