@@ -133,7 +133,6 @@ class SlayTheSpireEnv(gym.Env):
 
         self.last_state = navigator.process_non_combat(self.conn, self.last_state)
         return encode_state(self.last_state), {}
-
     def step(self, action):
         self.steps_since_reset += 1
         prev = self.last_state
@@ -159,41 +158,87 @@ class SlayTheSpireEnv(gym.Env):
             cmd = self.mapper.decode_action(action, prev) or "state"
         except:
             cmd = "state"
-        if "play" in cmd:
-            time.sleep(0.01)
-        self.conn.send_command(cmd)
-        
+        # ======================================================================
+        # 1. 药水逻辑 (自带发送，因为要修改指令)
+        # ======================================================================
         if "potion" in cmd:
-            # 解析药水索引 (例如 "potion 0 0" -> index 0)
             try:
                 parts = cmd.split()
-                # parts[0] is 'potion', parts[1] is potion_index
                 if len(parts) >= 2:
                     p_idx = int(parts[1])
-                    # 调用刚才写的等待函数
-                    combat.wait_for_potion_used(self.conn, prev, p_idx)
+                    
+                    # 计算安全目标
+                    safe_target = 0
+                    try:
+                        monsters = prev.get('game_state', {}).get('combat_state', {}).get('monsters', [])
+                        for m_idx, m in enumerate(monsters):
+                            if not m.get('is_gone') and not m.get('is_dying'):
+                                safe_target = m_idx
+                                break
+                    except: pass
+                    
+                    # 构造 potion use 指令
+                    final_cmd = f"potion use {p_idx} {safe_target}"
+                    
+                    self.conn.log(f"[Action] 发送药水指令: {final_cmd}")
+                    self.conn.send_command(final_cmd)
+                    
+                    # 进入专用等待
+                    combat.wait_for_potion_used(self.conn, prev, p_idx, final_cmd)
                 else:
-                    time.sleep(0.5) # 兜底
-            except:
-                time.sleep(0.5) # 解析失败的兜底
+                    self.conn.send_command(cmd)
+                    time.sleep(0.5)
+            except Exception as e:
+                self.conn.log(f"[Error] 药水指令异常: {e}")
+                time.sleep(0.5)
             
-            # 刷新一次状态以确保后续逻辑读到最新的
+            # 药水动作后强制刷新
             self.conn.send_command("state") 
             game_io.get_latest_state(self.conn)
-        # --- 诊断与等待 ---
-        elif "play" in cmd: 
+
+        # ======================================================================
+        # 2. 打牌逻辑 (需要显式发送)
+        # ======================================================================
+        elif "play" in cmd:
+            # 1. 物理延迟
+            time.sleep(0.01)
+            
+            # 2. [重要] 必须在这里发送指令！
+            self.conn.send_command(cmd)
+            
+            # 3. 计算费用并等待
             card_cost = 0
             try:
                 if action <= 9:
                     c = prev['game_state']['combat_state']['hand'][action]
                     card_cost = c.get('cost', 0)
             except: pass
-            combat.wait_for_card_played(self.conn, prev, card_cost)
             
+            combat.wait_for_card_played(self.conn, prev, card_cost)
+
+        # ======================================================================
+        # 3. 结束回合逻辑 (需要显式发送)
+        # ======================================================================
         elif "end" in cmd: 
+            # [重要] 必须在这里发送指令！
+            self.conn.send_command(cmd)
+            
             combat.wait_for_new_turn(self.conn, prev_turn)
+
+        # ======================================================================
+        # 4. 常规指令 (choose, wait, null 等)
+        # ======================================================================
         else: 
-            time.sleep(0.02); self.conn.send_command("state")
+            # [重要] 必须在这里发送指令！
+            self.conn.send_command(cmd)
+            
+            # [核心修复] 如果是选牌操作，调用刚才写的 wait_for_choice_result
+            if "choose" in cmd:
+                combat.wait_for_choice_result(self.conn)
+            else:
+                time.sleep(0.1)
+                
+            self.conn.send_command("state")
 
         # --- 获取新状态 ---
         self.conn.send_command("state")

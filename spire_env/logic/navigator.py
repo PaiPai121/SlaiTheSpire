@@ -175,9 +175,47 @@ def process_non_combat(conn, state):
                 elif 'return' in cmds or 'cancel' in cmds:
                     action_cmd = 'return' if 'return' in cmds else 'cancel'
                     decision_reason = "关闭地图"
+            # === [新增/修改] C1. 战斗奖励专用逻辑 (修复药水卡死) ===
+            elif screen == 'COMBAT_REWARD':
+                # 1. 检查药水是否满了
+                combat_state = game.get('combat_state', {})
+                # 注意：有些情况下 potions 在 game_state 根目录下，有些在 combat_state 下，做个兼容
+                potions = combat_state.get('potions', []) or game.get('potions', [])
+                
+                # 计算已填充的格子 (ID 不是 "Potion Slot" 的就是有药水)
+                filled_slots = [p for p in potions if p.get('id') != 'Potion Slot']
+                is_potion_full = (len(filled_slots) >= len(potions)) and (len(potions) > 0)
+                
+                # 2. 遍历奖励列表，跳过不该拿的
+                choice_list = game.get('choice_list', []) # 例如 ['gold', 'potion', 'card']
+                target_idx = -1
+                target_name = ""
+
+                for i, item_name in enumerate(choice_list):
+                    # 核心修复：如果是药水且包满了，绝对不要选它！
+                    if item_name == 'potion' and is_potion_full:
+                        conn.log(f"[Nav] ⚠️ 药水已满 ({len(filled_slots)}/{len(potions)})，自动跳过药水奖励")
+                        continue
+                    
+                    # 只要不是(满包时的药水)，就拿第一个遇到的东西
+                    target_idx = i
+                    target_name = item_name
+                    break # 找到一个能拿的就去拿，拿完状态会刷新，下次循环再拿下一个
+                
+                # 3. 执行决策
+                if target_idx != -1:
+                    action_cmd = f"choose {target_idx}"
+                    decision_reason = f"拿取奖励: {target_name}"
+                else:
+                    # 如果没有东西可拿了（或者只剩下拿不了的药水），点击继续/跳过
+                    for kw in ['proceed', 'skip', 'leave', 'cancel']:
+                        if kw in cmds: 
+                            action_cmd = kw
+                            decision_reason = "离开奖励结算"
+                            break
 
             # === C. 奖励与选择 ===
-            elif screen in ['COMBAT_REWARD', 'BOSS_REWARD', 'REST', 'GRID', 'HAND_SELECT', 'CARD_REWARD']:
+            elif screen in ['BOSS_REWARD', 'REST', 'GRID', 'HAND_SELECT', 'CARD_REWARD']:
                 
                 if 'choose' in cmds:
                     if same_screen_counter > 100: 
@@ -226,7 +264,16 @@ def process_non_combat(conn, state):
             stuck_counter = 0
             
             wait_start = time.time()
-            t_out = 8.0 if screen == 'MAP' else 2.0 
+
+            # [优化] 动态超时时间
+            # MAP: 地图加载慢，给 8s
+            # COMBAT_REWARD: 拿奖励很快，只要 0.5s 就够了，不要傻等
+            if screen == 'MAP':
+                t_out = 4.0
+            elif screen == 'COMBAT_REWARD':
+                t_out = 0.5 # <--- 关键修改：拿完奖励立刻走
+            else:
+                t_out = 2.0
             
             transitioned = False
             while time.time() - wait_start < t_out:

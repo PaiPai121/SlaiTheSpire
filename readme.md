@@ -4,17 +4,6 @@
 
 本项目实现了一个与游戏 **[CommunicationMod](https://github.com/ForgottenArbiter/CommunicationMod)** 交互的 Python 环境，在这个环境中实现对AI的训练。
 
-## ✨ 核心特性
-
-* **鲁棒的通讯协议 (Robust IO)**: 采用 "Drain Reading" 机制，彻底消除输入缓冲区积压导致的延迟决策。
-* **三重战斗防抖 (Strict Combat Lock)**: 在打牌后通过监测 **能量、手牌数、手牌内容** 的三重变化，配合物理冷却，彻底修复 "机枪连打" Bug。
-* **智能导航系统 (Smart Navigator)**:
-    * **地图锁定**: 防止在地图界面因读取旧状态而反复进出。
-    * **场景分治**: 针对商店（禁买防死锁）、奖励（贪婪拿取）、事件（优先逃跑）实施不同的优先级策略。
-    * **自动唤醒**: 检测到战斗加载卡顿或涅奥对话时，自动发送唤醒指令。
-* **Action Masking**: 使用 `MaskablePPO`，确保 AI 只能输出当前合法的动作（如能量不足不可打牌）。
-* **模块化架构**: 逻辑解耦为 `IO`, `Combat`, `Navigator`, `Reward` 四大模块，易于维护和扩展。
-
 ## 🛠️ 目录结构
 
 ```text
@@ -72,6 +61,7 @@ source venv/bin/activate
 
 # 3. 安装项目依赖
 pip install -r requirements.txt
+pip install -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt # 使用清华源
 ```
 
 ### 4. 开始训练
@@ -103,7 +93,7 @@ tensorboard --logdir logs/sb3
 * **受伤惩罚**: 自身掉血 (-)。
 
 ## 📝 TODO / 未来计划
-
+* [ ] 战斗中药水使用有bug，打不出去
 * [ ] 完善商店购买逻辑（目前是强制跳过）。
 * [ ] 增加更复杂的事件决策逻辑（目前多为随机或固定）。
 * [ ] 接入 LSTM/Transformer 以处理长短期记忆。
