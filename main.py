@@ -67,12 +67,22 @@ def main():
             "MlpPolicy",
             env,
             verbose=1,
-            device="cuda",
-            learning_rate=3e-4,
-            gamma=0.995,
-            ent_coef=0.01,
-            n_steps=512,
-            policy_kwargs=dict(net_arch=[256, 256])
+            device="cuda",          # 确保你有 GPU，没有就写 "cpu"
+            learning_rate=3e-4,     # 经典学习率
+            
+            # [关键修改] 视野要远
+            gamma=0.995,            # 0.99 -> 0.995。因为爬塔一局很长，我们需要 AI 关注更长远的未来
+            
+            # [关键修改] 鼓励探索
+            ent_coef=0.02,          # 熵系数。0.01 -> 0.02。
+                                    # 动作空间变大了 (67维)，AI 很容易陷入“只会打目标0”的局部最优。
+                                    # 加大熵系数能逼它多尝试其他目标。
+            
+            batch_size=256,         # 稍微加大 Batch
+            n_steps=2048,           # 每次收集更多步数再更新
+            policy_kwargs=dict(
+                net_arch=[512, 512] # 网络加宽。输入有1200维，256的层有点窄了，建议 512x512
+            )
         )
         reset_timesteps = True
 
