@@ -28,6 +28,7 @@ def process_non_combat(conn, state):
             if stuck_counter > 50: 
                 conn.send_command("state")
                 stuck_counter = 0
+            time.sleep(0.001)
             continue
 
         game = state.get('game_state', {})
@@ -84,6 +85,7 @@ def process_non_combat(conn, state):
                 
                 # 如果 3 秒后 confirm 还在，循环会自动结束，
                 # 外层 while True 会再次进来点一次（作为兜底防丢包），这比无限连点要安全得多。
+                time.sleep(0.001)
                 continue
             # 2. 选择逻辑 (Choose)
             # 只有当 'choose' 存在，且不能打牌(play)时，才视为选择界面
@@ -113,6 +115,7 @@ def process_non_combat(conn, state):
                 
                 conn.send_command("state")
                 state = get_latest_state(conn)
+                time.sleep(0.001)
                 continue
             
             # 如果成功脱离了 choose 循环，重置计数
@@ -128,6 +131,7 @@ def process_non_combat(conn, state):
                 time.sleep(0.1)
                 conn.send_command("state")
                 state = get_latest_state(conn)
+                time.sleep(0.001)
                 continue
         else:
             combat_wait_counter = 0

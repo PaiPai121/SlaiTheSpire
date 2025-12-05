@@ -55,6 +55,7 @@ def wait_for_card_played(conn, prev_state, card_cost=None):
             c_c = g.get('combat_state')
             if not c_c: 
                 # 读到了数据但不是战斗状态，立即读下一条，不 sleep
+                time.sleep(0.01)
                 continue 
 
             curr_e = c_c['player']['energy']
@@ -87,7 +88,7 @@ def wait_for_card_played(conn, prev_state, card_cost=None):
             
         except Exception:
             pass
-        
+        time.sleep(0.01)
         # 只有在发生异常时才 sleep 一小下，防止死循环报错
         # 正常逻辑下，这里不应该有 sleep
     
@@ -181,6 +182,7 @@ def wait_for_potion_used(conn, prev_state, potion_index, original_cmd_str):
                             conn.log(f"[Wait] ✅ 药水在第 {retry_count} 次重试后生效")
                         return
                     if time.time() - last_send_t < 1.5:
+                        time.sleep(0.01)
                         continue
             except: 
                 # 如果读取报错（比如数据结构变了），不要立即认为失败，继续下一轮

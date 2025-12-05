@@ -2,7 +2,7 @@
 import numpy as np
 import zlib # [优化] 移到这里
 from spire_env.definitions import ObservationConfig
-from spire_env.vocabulary import get_card_index, VOCAB_SIZE
+from spire_env.vocabulary import get_card_index, get_monster_index, get_intent_index, VOCAB_SIZE, VOCAB_MONSTER_SIZE, VOCAB_INTENT_SIZE
 
 # 引用计算好的总长度
 OBSERVATION_SIZE = ObservationConfig.SIZE
@@ -79,15 +79,32 @@ def encode_state(state):
     for i in range(5):
         if i < len(monsters):
             m = monsters[i]
+            # 只有活着的怪才编码，死的怪全是 0
             if not m.get('is_gone') and not m.get('half_dead'):
+                
+                # A. 基础数值 (3维)
                 obs[cursor] = m.get('current_hp', 0) / 100.0
                 obs[cursor+1] = m.get('block', 0) / 50.0
-                intent = m.get('intent', 'NONE')
-                obs[cursor+2] = 1.0 if 'ATTACK' in intent else 0.0
+                # 伤害值 (0-50 归一化)
                 dmg = m.get('move_adjusted_damage', 0)
-                obs[cursor+3] = dmg / 50.0
-                obs[cursor+4] = (zlib.crc32(m.get('id', '').encode('utf-8')) % 100) / 100.0
-        cursor += 5
+                obs[cursor+2] = dmg / 50.0
+                
+                # B. 意图 One-Hot (VOCAB_INTENT_SIZE)
+                intent = m.get('intent', 'UNKNOWN')
+                intent_idx = get_intent_index(intent)
+                if 0 <= intent_idx < VOCAB_INTENT_SIZE:
+                    obs[cursor + 3 + intent_idx] = 1.0
+                
+                # C. 怪物身份 One-Hot (VOCAB_MONSTER_SIZE)
+                # 偏移量 = 3(基础) + 意图长度
+                mid_offset = 3 + VOCAB_INTENT_SIZE
+                m_id = m.get('id', '')
+                m_idx = get_monster_index(m_id)
+                if 0 <= m_idx < VOCAB_MONSTER_SIZE:
+                    obs[cursor + mid_offset + m_idx] = 1.0
+                    
+        # 移动指针
+        cursor += ObservationConfig.MONSTER_FEATURE_SIZE
 
     # 4. 遗物 (10)
     relics = game_state.get('relics', [])

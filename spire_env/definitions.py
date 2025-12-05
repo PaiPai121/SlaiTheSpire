@@ -1,4 +1,4 @@
-from .vocabulary import VOCAB_SIZE
+from .vocabulary import VOCAB_SIZE, VOCAB_MONSTER_SIZE, VOCAB_INTENT_SIZE # [新增引用]
 
 class ActionConfig:
     # 常量定义
@@ -30,19 +30,24 @@ class ActionIndex:
     TOTAL_ACTIONS = ActionConfig.TOTAL_ACTIONS
 
 class ObservationConfig:
-    # (保持你刚才修改过的 ObservationConfig 不变)
-    # ... 也就是 PLAYER_SIZE, HAND_SIZE 那一大堆 ...
-    # 务必保留你刚才改好的 1000+ 维度的定义
-    
-    # 为方便复制，这里简写，请保留你原来的完整内容：
+    # 1. 玩家 (Player) - 14维 (保持不变)
     PLAYER_SIZE = 1 + 1 + 6 + 1 + 5 
+    
+    # 2. 手牌 (Hand) - (保持不变)
     HAND_FEATURE_SIZE = 5 + VOCAB_SIZE
     HAND_SIZE = 10 * HAND_FEATURE_SIZE
-    MONSTER_SIZE = 25
+    
+    # 3. 怪物 (Monster) - [核心修改]
+    # 3个基础值 (HP, Block, Dmg) + 意图OneHot + 身份OneHot
+    MONSTER_FEATURE_SIZE = 3 + VOCAB_INTENT_SIZE + VOCAB_MONSTER_SIZE
+    MONSTER_SIZE = 5 * MONSTER_FEATURE_SIZE # 5只怪
+    
+    # 4. 其他 (保持不变)
     RELIC_SIZE = 10
     PILE_SIZE = 12
     GLOBAL_SIZE = 2
     POTION_SIZE = 3
     SCREEN_SIZE = 8
     
+    # 总维度
     SIZE = PLAYER_SIZE + HAND_SIZE + MONSTER_SIZE + RELIC_SIZE + PILE_SIZE + GLOBAL_SIZE + POTION_SIZE + SCREEN_SIZE

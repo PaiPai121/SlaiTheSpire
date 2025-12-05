@@ -23,6 +23,8 @@ class SlayTheSpireEnv(gym.Env):
         
         self.last_state = None
         self.steps_since_reset = 0
+        # [新增] 用于记录上一场战斗的怪物指纹，防止重复打印
+        self.last_encounter_fingerprint = None
 
     def reset(self, seed=None, options=None):
         """
@@ -256,7 +258,43 @@ class SlayTheSpireEnv(gym.Env):
         if abs(rew) > 0.01:
             # 打印到控制台，给自己看 (不要用 self.conn.log)
             self.conn.log(f"   >>> Reward: {rew:.2f} (HP变动/伤害/击杀)")
-
+        # ---------------------------------------------------------
+        # [修正版] 怪物识别日志 (基于指纹去重)
+        # ---------------------------------------------------------
+        try:
+            # 1. 检查是否在战斗中
+            if 'combat_state' in final['game_state']:
+                monsters = final['game_state']['combat_state']['monsters']
+                # 生成当前怪物指纹 (比如 "Cultist,JawWorm")
+                # 过滤掉已经死亡的 (is_gone)
+                active_monsters = sorted([m.get('id', 'Unknown') for m in monsters if not m.get('is_gone')])
+                curr_fingerprint = ",".join(active_monsters)
+                # self.conn.log(curr_fingerprint)
+                # self.conn.log(self.last_encounter_fingerprint)
+                # 2. 如果指纹变了，且不为空，说明遇到了一波新怪
+                if curr_fingerprint and curr_fingerprint != self.last_encounter_fingerprint:
+                    
+                    # 记录到文件
+                    self.conn.log(f"[Combat] 遭遇怪物: {active_monsters}")
+                    
+                    # 3. 检查词表完整性
+                    from spire_env.vocabulary import get_monster_index, VOCAB_MONSTER_SIZE
+                    unknowns = [m for m in active_monsters if get_monster_index(m) == VOCAB_MONSTER_SIZE-1]
+                    if unknowns:
+                        msg = f"⚠️ 警告: 发现未收录怪物 {unknowns}，One-Hot 将失效！请更新 vocabulary.py"
+                        self.conn.log(msg)
+                    
+                    # 更新指纹
+                    self.last_encounter_fingerprint = curr_fingerprint
+            else:
+                # 如果不在战斗中，重置指纹，这样下次遇到同样的怪也能打印 (比如连续两场都是史莱姆)
+                self.last_encounter_fingerprint = None
+                
+        except Exception as e:
+            # 防止日志逻辑崩坏影响训练
+            # print(f"Log Error: {e}") 
+            pass
+        # ---------------------------------------------------------
         self.last_state = final
         done = False
         
