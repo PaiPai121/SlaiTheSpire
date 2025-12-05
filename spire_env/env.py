@@ -159,15 +159,29 @@ class SlayTheSpireEnv(gym.Env):
             cmd = self.mapper.decode_action(action, prev) or "state"
         except:
             cmd = "state"
-
+        if "play" in cmd:
+            time.sleep(0.01)
         self.conn.send_command(cmd)
         
         if "potion" in cmd:
-            time.sleep(0.6) # 药水动画通常较长，给 1.2 秒缓冲
-            self.conn.send_command("state") # 刷新一下状态
-            game_io.get_latest_state(self.conn) # 清空一下缓冲
+            # 解析药水索引 (例如 "potion 0 0" -> index 0)
+            try:
+                parts = cmd.split()
+                # parts[0] is 'potion', parts[1] is potion_index
+                if len(parts) >= 2:
+                    p_idx = int(parts[1])
+                    # 调用刚才写的等待函数
+                    combat.wait_for_potion_used(self.conn, prev, p_idx)
+                else:
+                    time.sleep(0.5) # 兜底
+            except:
+                time.sleep(0.5) # 解析失败的兜底
+            
+            # 刷新一次状态以确保后续逻辑读到最新的
+            self.conn.send_command("state") 
+            game_io.get_latest_state(self.conn)
         # --- 诊断与等待 ---
-        if "play" in cmd: 
+        elif "play" in cmd: 
             card_cost = 0
             try:
                 if action <= 9:

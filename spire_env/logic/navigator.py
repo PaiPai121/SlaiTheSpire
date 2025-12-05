@@ -59,15 +59,32 @@ def process_non_combat(conn, state):
             # --- [Grid/Hand Select 专用逻辑] ---
             
             # 1. 最高优先级：看见 Confirm 就点，绝不犹豫
+            # 1. 最高优先级：看见 Confirm 就点
             if 'confirm' in cmds:
                 conn.log(f"[Combat] 交互确认 -> confirm")
                 conn.send_command("confirm")
                 choose_stuck_counter = 0 
-                time.sleep(0.8) # 给动画一点时间消失
-                conn.send_command("state")
-                state = get_latest_state(conn)
-                continue # 既然点了 confirm，就重新循环，不要往下执行 choose
-
+                
+                # [关键修复] 智能等待 confirm 消失
+                # 防止因为动画延迟导致脚本以为没点上，从而疯狂连点
+                start_wait = time.time()
+                while time.time() - start_wait < 3.0: # 最多给 3 秒动画时间
+                    time.sleep(0.2) # 每次小睡 0.2s
+                    conn.send_command("state")
+                    # 使用较小的 retry 防止这里卡死
+                    new_s = get_latest_state(conn, retry_limit=2)
+                    
+                    if new_s:
+                        state = new_s # 更新这一轮的状态
+                        
+                        # 检查 confirm 是否已经消失
+                        if 'confirm' not in state.get('available_commands', []):
+                            # 消失了！说明点击生效，动画结束，跳出循环进入下一步
+                            break
+                
+                # 如果 3 秒后 confirm 还在，循环会自动结束，
+                # 外层 while True 会再次进来点一次（作为兜底防丢包），这比无限连点要安全得多。
+                continue
             # 2. 选择逻辑 (Choose)
             # 只有当 'choose' 存在，且不能打牌(play)时，才视为选择界面
             if 'choose' in cmds and 'play' not in cmds and 'end' not in cmds:
