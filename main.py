@@ -5,7 +5,7 @@ from sb3_contrib.common.wrappers import ActionMasker
 from stable_baselines3.common.logger import configure
 from stable_baselines3.common.callbacks import CheckpointCallback
 from spire_env.env import SlayTheSpireEnv
-
+n_steps = 2048
 # --- [新增] 自定义回调函数：存档并写日志 ---
 class SmartCheckpointCallback(CheckpointCallback):
     def __init__(self, save_freq, save_path, name_prefix, connection):
@@ -20,7 +20,9 @@ class SmartCheckpointCallback(CheckpointCallback):
             # 打印格式： "Step: 1520 / 2048"
             # 当左边的数达到右边的数时，就会触发一次 Update 和 TensorBoard 写入
         if self.num_timesteps % 20 == 0:
-                    self.connection.log(f">>> Global Step: {self.num_timesteps}")
+            self.connection.log(f">>> Global Step: {self.num_timesteps} / {n_steps}")
+            self.connection.log(f">>> Current ncalls: {self.n_calls} / {n_steps}")
+        
         # 如果这一步触发了保存 (n_calls 是当前步数)
         if self.n_calls % self.save_freq == 0:
             # 拼接文件名 (参考 SB3 的命名规则)
@@ -51,7 +53,13 @@ def main():
     # --- 2. 创建环境 ---
     env = SlayTheSpireEnv()
     env = ActionMasker(env, mask_fn)
-    
+    try:
+        num_envs = env.num_envs
+        env.conn.log(f"【PPO 更新检查】检测到环境数量: {num_envs}")
+        env.conn.log(f"【PPO 更新检查】总收集步数阈值: {model.n_steps * num_envs}")
+    except AttributeError:
+        # 如果不是 VecEnv，会抛出 AttributeError，通常 num_envs = 1
+        env.conn.log(f"【PPO 更新检查】环境为单实例 (num_envs = 1)。阈值为 {n_steps} 步。")
     # --- 3. 模型加载/初始化 ---
     model = None
     reset_timesteps = True
@@ -84,7 +92,7 @@ def main():
                                     # 加大熵系数能逼它多尝试其他目标。
             
             batch_size=256,         # 稍微加大 Batch
-            n_steps=512,           # 每次收集更多步数再更新
+            n_steps=n_steps,           # 每次收集更多步数再更新
             policy_kwargs=dict(
                 net_arch=[512, 512] # 网络加宽。输入有1200维，256的层有点窄了，建议 512x512
             )
@@ -94,6 +102,12 @@ def main():
     # 配置日志
     new_logger = configure(logs_dir, ["csv", "tensorboard"])
     model.set_logger(new_logger)
+
+
+    # 打印模型当前的步数，以确定何时会触发下一次更新
+    env.conn.log(f"当前模型步数 (num_timesteps): {model.num_timesteps}")
+    next_update_step = model.num_timesteps - (model.num_timesteps % model.n_steps) + model.n_steps
+    env.conn.log(f"下次更新/日志写入预计在步数: {next_update_step}")
 
     # --- [关键修改] 配置智能存档回调 ---
     # save_freq=5000: 每 5000 步存一次 (约 10-20 分钟)

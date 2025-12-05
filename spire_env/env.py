@@ -299,13 +299,15 @@ class SlayTheSpireEnv(gym.Env):
         done = False
         
         screen = final['game_state'].get('screen_type')
+        self.conn.log(f"screen = {screen}")
         if screen in ['GAME_OVER', 'VICTORY']:
             done = True
             rew += 100 if screen == 'VICTORY' else -10
             self.conn.log(f"Game Over: {screen}")
 
         truncated = self.steps_since_reset > 2000
-
+        msg = f"done = {done}，truncated = {truncated}"
+        self.conn.log(msg)
         return encode_state(final), rew, done, truncated, {}
 
     def action_masks(self): return self.mapper.get_mask(self.last_state)
