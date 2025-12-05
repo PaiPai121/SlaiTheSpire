@@ -19,7 +19,7 @@ def wait_for_card_played(conn, prev_state, card_cost=None):
         return
 
     # 1. 物理冷却 (给游戏一点反应时间，防止读到由于网络延迟还没发出的旧包)
-    time.sleep(0.1) 
+    time.sleep(0.01) 
     
     start_t = time.time()
     last_req_time = 0
@@ -126,7 +126,7 @@ def wait_for_potion_used(conn, prev_state, potion_index, original_cmd_str):
     time.sleep(0.01)
     last_req_time = 0
     while time.time() - start_t < 4.0:
-        time.sleep(0.1) # 稍微快一点的检测
+        time.sleep(0.01) # 稍微快一点的检测
         
         # conn.send_command("state")
         # 流量控制：每 0.5s 发一次 state，防止刷屏
@@ -195,7 +195,7 @@ def wait_for_potion_used(conn, prev_state, potion_index, original_cmd_str):
             # 发送 cancel 并不是撤销药水，而是撤销可能的“卡牌悬停”状态
             # 这有助于让药水指令重新生效
             conn.send_command("cancel")
-            time.sleep(0.1)
+            time.sleep(0.01)
             
             # 轮换指令
             cmd_to_send = cmd_simple if (retry_count % 2 == 1) else cmd_full
@@ -301,7 +301,7 @@ def ensure_hand_drawn(conn, state):
         hand = c.get('hand', [])
         if len(hand) > 0: 
             break
-        time.sleep(0.1)
+        time.sleep(0.01)
         conn.send_command("state")
         state = get_latest_state(conn)
 

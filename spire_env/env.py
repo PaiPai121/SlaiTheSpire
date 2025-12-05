@@ -54,7 +54,7 @@ class SlayTheSpireEnv(gym.Env):
             state = game_io.get_latest_state(self.conn, retry_limit=2)
             
             if not state: 
-                time.sleep(0.1); continue
+                time.sleep(0.01); continue
 
             g = state.get('game_state') or {}
             s = g.get('screen_type')
@@ -136,7 +136,7 @@ class SlayTheSpireEnv(gym.Env):
                     self.conn.send_command(nav)
                     last_action_time = time.time()
             
-            time.sleep(0.1)
+            time.sleep(0.01)
 
         self.last_state = navigator.process_non_combat(self.conn, self.last_state)
         return encode_state(self.last_state), {}
@@ -241,7 +241,7 @@ class SlayTheSpireEnv(gym.Env):
             if "choose" in cmd:
                 combat.wait_for_choice_result(self.conn)
             else:
-                time.sleep(0.1)
+                time.sleep(0.01)
                 
             # self.conn.send_command("state")
 

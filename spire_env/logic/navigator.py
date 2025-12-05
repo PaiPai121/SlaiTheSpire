@@ -70,7 +70,7 @@ def process_non_combat(conn, state):
                 # 防止因为动画延迟导致脚本以为没点上，从而疯狂连点
                 start_wait = time.time()
                 while time.time() - start_wait < 3.0: # 最多给 3 秒动画时间
-                    time.sleep(0.2) # 每次小睡 0.2s
+                    time.sleep(0.01) # 每次小睡 0.2s
                     conn.send_command("state")
                     # 使用较小的 retry 防止这里卡死
                     new_s = get_latest_state(conn, retry_limit=2)
@@ -128,7 +128,7 @@ def process_non_combat(conn, state):
                 combat_wait_counter += 1
                 if combat_wait_counter % 20 == 0: 
                     conn.send_command("ready")
-                time.sleep(0.1)
+                time.sleep(0.01)
                 conn.send_command("state")
                 state = get_latest_state(conn)
                 time.sleep(0.001)
@@ -139,7 +139,7 @@ def process_non_combat(conn, state):
 
         # 3. 转场过滤
         if screen == 'NONE':
-            time.sleep(0.1); conn.send_command("state")
+            time.sleep(0.01); conn.send_command("state")
             state = get_latest_state(conn); continue
 
         # ==========================================
@@ -374,7 +374,7 @@ def process_non_combat(conn, state):
                 same_screen_counter += 1
         else:
             stuck_counter += 1
-            time.sleep(0.1)
+            time.sleep(0.01)
             conn.send_command("state")
             state = get_latest_state(conn)
             
