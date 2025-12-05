@@ -3,7 +3,7 @@ import time
 import gymnasium as gym
 from gymnasium import spaces
 from .interface import Connection
-from .definitions import ObservationConfig, ActionIndex
+from .definitions import ObservationConfig, ActionConfig # [修改] 引用 ActionConfig
 from utils.state_encoder import encode_state
 from utils.action_mapper import ActionMapper
 
@@ -14,8 +14,13 @@ class SlayTheSpireEnv(gym.Env):
         super(SlayTheSpireEnv, self).__init__()
         self.conn = Connection()
         self.mapper = ActionMapper()
-        self.action_space = spaces.Discrete(ActionIndex.TOTAL_ACTIONS)
+        
+        # [修改] 使用新的 TOTAL_ACTIONS (67)
+        self.action_space = spaces.Discrete(ActionConfig.TOTAL_ACTIONS)
+        
+        # 观察空间保持不变 (1000+ 维)
         self.observation_space = spaces.Box(low=-5.0, high=1000.0, shape=(ObservationConfig.SIZE,), dtype=np.float32)
+        
         self.last_state = None
         self.steps_since_reset = 0
 

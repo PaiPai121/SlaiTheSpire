@@ -104,8 +104,13 @@ tensorboard --logdir logs/sb3
 
 
 ## 🔄 更新日志 (Changelog)
+### v1.0.4 - Action Space Upgrade 
+* **Targeted Capability**: The agent is no longer limited to attacking the first monster. It can now choose specific targets for cards and potions.
+    * *Mechanism*: Action space flattened to `Discrete(67)`.
+    * *Logic*: `ActionID = (CardIndex * 5) + TargetIndex`.
+* **Smart Masking**: The `ActionMapper` now intelligently masks invalid targets (e.g., dead monsters) for targeted cards, while automatically defaulting to "Target 0" for AOE/Power cards to reduce search space.
 
-### v2.0 - Perception Refactor 
+### v1.0.3 - Perception Refactor 
 
 #### 🧠 模型架构变更 (AI Model Architecture)
 * **状态编码重构 (State Encoder Overhaul)**:
