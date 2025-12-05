@@ -12,6 +12,7 @@ def wait_for_card_played(conn, prev_state, card_cost=None):
         base_h = len(p_c.get('hand', []))
         base_ids = sorted([c.get('id','') for c in p_c.get('hand', [])])
         base_screen = prev_state.get('game_state', {}).get('screen_type')
+        base_powers = len(p_c['player'].get('powers', []))
     except:
         conn.log("[Wait] ❌ 获取基准值失败，默认等待0.5s")
         time.sleep(0.5)
@@ -67,7 +68,7 @@ def wait_for_card_played(conn, prev_state, card_cost=None):
                 return
 
             # 2. 手牌数变少了
-            if curr_h < base_h:
+            if curr_h != base_h:
                 # conn.log(f"[Wait] ✅ 手牌减少 ({base_h}->{curr_h})")
                 return
 
@@ -76,7 +77,8 @@ def wait_for_card_played(conn, prev_state, card_cost=None):
                 curr_ids = sorted([c.get('id','') for c in c_c.get('hand', [])])
                 if curr_ids != base_ids:
                     return
-            
+            curr_powers = len(c_c['player'].get('powers', []))
+            if curr_powers != base_powers: return
             # --- [核心修改] ---
             # 如果走到了这里，说明读到的这条状态还未满足条件（可能是动画过程中的中间态）。
             # 关键：【不要 sleep！】

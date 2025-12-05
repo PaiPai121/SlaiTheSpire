@@ -37,7 +37,7 @@ class ActionMapper:
                     c = hand[i]
                     cost = c.get('cost', 0)
                     card_type = c.get('type', 'UNKNOWN')
-                    
+                    card_id = c.get('id', '') # 获取卡牌 ID
                     # --- 规则校验 ---
                     
                     # A. 缠身状态下禁止攻击牌
@@ -45,7 +45,19 @@ class ActionMapper:
                         mask[i] = False
                         continue
                         
-                    # B. 基础规则：能量够 + 不是诅咒/状态(不可打) + 游戏允许
+                    # B. [新增] 交锋 (Clash) 严格检查
+                    # 如果这张牌是交锋，必须确保手牌里全是攻击牌
+                    if card_id == 'Clash':
+                        has_non_attack = False
+                        for other_c in hand:
+                            if other_c.get('type') != 'ATTACK':
+                                has_non_attack = True
+                                break
+                        if has_non_attack:
+                            mask[i] = False
+                            continue
+
+                    # C. 基础规则：能量够 + 不是诅咒/状态(不可打) + 游戏允许
                     # 注意：cost == -1 代表 X 费牌，通常能打；cost == -2 是不能打的(如状态牌)
                     req = cost if cost >= 0 else 0
                     
