@@ -110,7 +110,7 @@ def process_non_combat(conn, state):
                 choose_stuck_counter += 1
                 
                 # 等待时间
-                wait_time = 1.0 if screen == 'GRID' else 0.5
+                wait_time = 0.5 if screen == 'GRID' else 0.15
                 time.sleep(wait_time)
                 
                 conn.send_command("state")

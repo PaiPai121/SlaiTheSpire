@@ -27,7 +27,7 @@ def wait_for_card_played(conn, prev_state, card_cost=None):
     while time.time() - start_t < 4.0:
         # 主动请求刷新 (虽然通常不需要，因为游戏会自动发，但为了保险)
         # conn.send_command("state")
-        if time.time() - last_req_time > 0.5:
+        if time.time() - last_req_time > 0.05:
             conn.send_command("state")
             last_req_time = time.time()
         
@@ -130,7 +130,7 @@ def wait_for_potion_used(conn, prev_state, potion_index, original_cmd_str):
         
         # conn.send_command("state")
         # 流量控制：每 0.5s 发一次 state，防止刷屏
-        if time.time() - last_req_time > 0.5:
+        if time.time() - last_req_time > 0.05:
             conn.send_command("state")
             last_req_time = time.time()
 
@@ -214,7 +214,7 @@ def wait_for_new_turn(conn, prev_turn):
     conn.log(f"[Wait] 等待新回合 (Curr:{prev_turn})...")
     
     # 稍微给一点时间让回合结束动画开始
-    time.sleep(0.5) 
+    time.sleep(0.01) 
     
     st = time.time()
     while time.time() - st < 60.0:
@@ -312,7 +312,7 @@ def ensure_hand_drawn(conn, state):
     
     start_t = time.time()
     while time.time() - start_t < 2.0: # 最多等 2 秒稳定期
-        time.sleep(0.15) # 间隔稍微长一点，覆盖动画帧
+        time.sleep(0.02) # 间隔稍微长一点，覆盖动画帧
         conn.send_command("state")
         new_state = get_latest_state(conn)
         

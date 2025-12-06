@@ -113,7 +113,7 @@ def main():
     # save_freq=5000: 每 5000 步存一次 (约 10-20 分钟)
     # 这样就算直接关游戏，最多也只损失几分钟的进度
     auto_save_callback = SmartCheckpointCallback(
-        save_freq=5000, 
+        save_freq=1000, 
         save_path=models_dir,
         name_prefix="spire_ckpt",
         connection=env.env.conn # 把底层的 connection 对象传进去用于写日志
